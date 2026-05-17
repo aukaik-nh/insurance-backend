@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+supabase
+google-generativeai
+anthropic
+pymupdf
+python-dotenv
+pydantic
+Pillow
+numpy
+pdfminer.six
+pytesseract
+psycopg2-binary

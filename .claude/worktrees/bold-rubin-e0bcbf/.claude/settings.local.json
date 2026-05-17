@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem D:\\\\insurance-frontend -Depth 5 | Where-Object { $_.FullName -notmatch \"node_modules\" } | Select-Object FullName)",
+      "PowerShell(cmd /c \"dir D:\\\\insurance-frontend /s /b | findstr /v node_modules\")",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(python -c \"import pytesseract; pytesseract.pytesseract.tesseract_cmd = r'C:\\\\Program Files\\\\Tesseract-OCR\\\\tesseract.exe'; print\\(pytesseract.get_languages\\(\\)\\)\")",
+      "Bash(Get-ChildItem -Path \"D:\\\\insurance-frontend\" -Depth 2)",
+      "Bash(Select-Object -First 50)",
+      "Bash(Format-Table Name, PSIsContainer)",
+      "Bash(\"D:/insurance-backend/venv/Scripts/pip.exe\" list *)",
+      "Bash(\"D:/insurance-backend/venv/Scripts/pip.exe\" install *)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//d//**)",
+      "Read(//c//**)",
+      "Bash(# ค้นหา .frm .bas files ที่อาจมีโค้ด VB6 *)"
+    ]
+  }
+}
