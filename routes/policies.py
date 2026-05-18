@@ -43,14 +43,28 @@ def _is_supabase_storage_url(pdf_url: str) -> bool:
     """เช็คว่าเป็น Supabase Storage public URL หรือไม่"""
     return bool(pdf_url) and "/storage/v1/object/public/" in pdf_url
 
+# Sortable columns (whitelist กัน SQL injection)
+SORTABLE = {
+    "policy_number", "insured_name", "license_plate",
+    "coverage_start", "coverage_end", "total_premium",
+    "created_at", "company_code", "policy_type",
+}
+
+
 @router.get("/policies")
 async def get_policies(
     page: int = 1,
     limit: int = 20,
-    search: str = Query(None)
+    search: str = Query(None),
+    sort: str = Query(None),       # column name
+    order: str = Query("desc"),    # "asc" | "desc"
 ):
     supabase = get_supabase()
     offset = (page - 1) * limit
+
+    # Validate sort column (whitelist)
+    sort_col = sort if sort in SORTABLE else "created_at"
+    is_desc  = (order or "desc").lower() != "asc"
 
     try:
         query = supabase.table("insurance_policies").select(LIST_COLUMNS, count="exact")
@@ -62,7 +76,7 @@ async def get_policies(
                 f"license_plate.ilike.%{search}%"
             )
 
-        result = query.order("created_at", desc=True)\
+        result = query.order(sort_col, desc=is_desc)\
                       .range(offset, offset + limit - 1)\
                       .execute()
 
@@ -204,5 +218,48 @@ async def delete_policy(policy_id: str):
         supabase.table("insurance_policies")\
                 .delete().eq("id", policy_id).execute()
         return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+
+
+@router.delete("/policies/{policy_id}/pdf")
+async def delete_policy_pdf(policy_id: str):
+    """ลบไฟล์ PDF ออกจาก record + Storage (เก็บ record ไว้)"""
+    supabase = get_supabase()
+    try:
+        # ดึง pdf_url ปัจจุบัน
+        result = supabase.table("insurance_policies")\
+                         .select("pdf_url").eq("id", policy_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="ไม่พบ record")
+
+        pdf_url = result.data[0].get("pdf_url") or ""
+
+        # ลบจาก Storage (ถ้าเป็น Supabase Storage)
+        if _is_supabase_storage_url(pdf_url):
+            try:
+                # extract path: .../storage/v1/object/public/{bucket}/{path}
+                marker = "/storage/v1/object/public/"
+                idx = pdf_url.find(marker)
+                if idx != -1:
+                    rest = pdf_url[idx + len(marker):]
+                    parts = rest.split("/", 1)
+                    if len(parts) == 2:
+                        bucket, file_path = parts
+                        supabase.storage.from_(bucket).remove([file_path])
+            except Exception as e:
+                print(f"[delete-pdf] Storage cleanup failed (ignored): {e}")
+
+        # clear DB fields
+        supabase.table("insurance_policies").update({
+            "pdf_url": None,
+            "pdf_filename": None,
+            "pdf_size": None,
+            "pdf_data": None,
+        }).eq("id", policy_id).execute()
+
+        return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
