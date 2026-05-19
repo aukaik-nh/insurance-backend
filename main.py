@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routes import upload, policies, invoice
+from routes import upload, policies, invoice, attachments
 from services.line_notify import start_scheduler
 from dotenv import load_dotenv
 import os, psycopg2
@@ -69,6 +69,40 @@ BEGIN
   END IF;
 END
 $$;
+
+-- เอกสารแนบหลายไฟล์ต่อกรมธรรม์ (พ.ร.บ. / สลักหลัง / อื่นๆ)
+CREATE TABLE IF NOT EXISTS public.policy_attachments (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  policy_id    uuid NOT NULL REFERENCES public.insurance_policies(id) ON DELETE CASCADE,
+  doc_type     text NOT NULL CHECK (doc_type IN ('main','prb','endorsement','other')),
+  label        text,
+  pdf_url      text,
+  pdf_filename text,
+  pdf_size     integer,
+  note         text,
+  created_at   timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS policy_attachments_policy_id_idx
+  ON public.policy_attachments(policy_id);
+CREATE INDEX IF NOT EXISTS policy_attachments_type_idx
+  ON public.policy_attachments(policy_id, doc_type);
+
+ALTER TABLE public.policy_attachments ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename  = 'policy_attachments'
+      AND policyname = 'allow_all'
+  ) THEN
+    EXECUTE 'CREATE POLICY allow_all ON public.policy_attachments
+             FOR ALL USING (true) WITH CHECK (true)';
+  END IF;
+END
+$$;
 """
 
 def _run_migrations():
@@ -114,6 +148,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(policies.router, prefix="/api", tags=["Policies"])
 app.include_router(invoice.router, prefix="/api", tags=["Invoice"])
+app.include_router(attachments.router, prefix="/api", tags=["Attachments"])
 
 @app.get("/")
 def root():
