@@ -1,8 +1,12 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os, jwt as pyjwt
 from datetime import datetime, timedelta, timezone
 
 router = APIRouter()
+
+# ── HTTP Bearer extractor (auto_error=False → จัดการเองใน Depends) ──
+_bearer = HTTPBearer(auto_error=False)
 
 
 def _secret() -> str:
@@ -21,15 +25,24 @@ def make_token(username: str) -> str:
 
 
 def verify_token(token: str) -> str:
-    """Returns username or raises HTTPException 401."""
+    """Decode JWT → return username, raise 401 on failure."""
     try:
         payload = pyjwt.decode(token, _secret(), algorithms=["HS256"])
         return payload["sub"]
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session หมดอายุ กรุณาเข้าสู่ระบบใหม่")
     except Exception:
-        raise HTTPException(status_code=401, detail="Token ไม่ถูกต้อง")
+        raise HTTPException(status_code=401, detail="Token ไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่")
 
+
+def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)) -> str:
+    """FastAPI Dependency — ใช้กับ router ที่ต้องการ auth"""
+    if not creds:
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
+    return verify_token(creds.credentials)
+
+
+# ── Public endpoints ────────────────────────────────────────────────
 
 @router.post("/auth/login")
 async def login(request: Request):
@@ -52,12 +65,3 @@ async def login(request: Request):
 
     token = make_token(username)
     return {"token": token, "username": username}
-
-
-@router.get("/auth/me")
-async def me(request: Request):
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="ไม่ได้เข้าสู่ระบบ")
-    username = verify_token(auth[7:])
-    return {"username": username}
