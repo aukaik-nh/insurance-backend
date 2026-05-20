@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routes import upload, policies, invoice, attachments
+from routes import upload, policies, invoice, attachments, auth as auth_routes
 from services.line_notify import start_scheduler
 from dotenv import load_dotenv
 import os, psycopg2
@@ -146,6 +146,45 @@ _run_migrations()
 
 app = FastAPI(title="Insurance API", version="1.0.0")
 
+# ── Auth middleware — ตรวจ JWT ทุก request ยกเว้น login + CORS preflight ──
+import jwt as pyjwt
+
+_OPEN_PATHS = {"/", "/api/auth/login", "/docs", "/openapi.json", "/redoc"}
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    # OPTIONS (CORS preflight) — ปล่อยผ่านเสมอ
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    # Public paths
+    if request.url.path in _OPEN_PATHS:
+        return await call_next(request)
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "กรุณาเข้าสู่ระบบก่อน"},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    token = auth[7:]
+    try:
+        secret = os.getenv("JWT_SECRET", "insurance-default-secret-please-change-in-prod")
+        pyjwt.decode(token, secret, algorithms=["HS256"])
+    except pyjwt.ExpiredSignatureError:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Session หมดอายุ กรุณาเข้าสู่ระบบใหม่"},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Token ไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่"},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    return await call_next(request)
+
 @app.on_event("startup")
 async def startup():
     start_scheduler()
@@ -167,6 +206,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         headers={"Access-Control-Allow-Origin": "*"},
     )
 
+app.include_router(auth_routes.router, prefix="/api", tags=["Auth"])
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(policies.router, prefix="/api", tags=["Policies"])
 app.include_router(invoice.router, prefix="/api", tags=["Invoice"])
