@@ -52,7 +52,14 @@ ALTER TABLE public.insurance_policies
   ADD COLUMN IF NOT EXISTS sum_insured          numeric,
   ADD COLUMN IF NOT EXISTS date_notify          date,
   ADD COLUMN IF NOT EXISTS date_cancel          date,
-  ADD COLUMN IF NOT EXISTS date_policy_receive  date;
+  ADD COLUMN IF NOT EXISTS date_policy_receive  date,
+  -- ฟิลด์ commission/หัก ณ ที่จ่าย/ปัดเศษ (ตามฟอร์มระบบเก่า)
+  ADD COLUMN IF NOT EXISTS prepaid_tax_1pct     numeric,
+  ADD COLUMN IF NOT EXISTS commission_pct       numeric,
+  ADD COLUMN IF NOT EXISTS commission_baht      numeric,
+  ADD COLUMN IF NOT EXISTS wht_10pct            numeric,
+  ADD COLUMN IF NOT EXISTS rounding             numeric,
+  ADD COLUMN IF NOT EXISTS collected_amount     numeric;
 
 ALTER TABLE public.insurance_policies ENABLE ROW LEVEL SECURITY;
 
@@ -72,16 +79,31 @@ $$;
 
 -- เอกสารแนบหลายไฟล์ต่อกรมธรรม์ (พ.ร.บ. / สลักหลัง / อื่นๆ)
 CREATE TABLE IF NOT EXISTS public.policy_attachments (
-  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  policy_id    uuid NOT NULL REFERENCES public.insurance_policies(id) ON DELETE CASCADE,
-  doc_type     text NOT NULL CHECK (doc_type IN ('main','prb','endorsement','other')),
-  label        text,
-  pdf_url      text,
-  pdf_filename text,
-  pdf_size     integer,
-  note         text,
-  created_at   timestamptz DEFAULT now()
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  policy_id     uuid NOT NULL REFERENCES public.insurance_policies(id) ON DELETE CASCADE,
+  doc_type      text NOT NULL CHECK (doc_type IN ('main','prb','endorsement','other')),
+  label         text,
+  pdf_url       text,
+  pdf_filename  text,
+  pdf_size      integer,
+  note          text,
+  -- ฟิลด์เบี้ย (ใช้กับ พ.ร.บ. ที่ต่อทุกปี)
+  net_premium    numeric,
+  stamp_duty     numeric,
+  vat            numeric,
+  total_premium  numeric,
+  coverage_start date,
+  coverage_end   date,
+  created_at     timestamptz DEFAULT now()
 );
+-- เผื่อ table เคยสร้างไว้แล้ว ให้เพิ่มคอลัมน์เบี้ยที่ขาด
+ALTER TABLE public.policy_attachments
+  ADD COLUMN IF NOT EXISTS net_premium    numeric,
+  ADD COLUMN IF NOT EXISTS stamp_duty     numeric,
+  ADD COLUMN IF NOT EXISTS vat            numeric,
+  ADD COLUMN IF NOT EXISTS total_premium  numeric,
+  ADD COLUMN IF NOT EXISTS coverage_start date,
+  ADD COLUMN IF NOT EXISTS coverage_end   date;
 
 CREATE INDEX IF NOT EXISTS policy_attachments_policy_id_idx
   ON public.policy_attachments(policy_id);

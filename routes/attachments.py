@@ -43,15 +43,49 @@ async def list_attachments(policy_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _to_float(v):
+    if v in (None, "", "null"): return None
+    try:
+        s = str(v).translate(str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")).replace(",", "").strip()
+        return float(s) if s else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_date(v):
+    """แปลง YYYY-MM-DD หรือ DD/MM/YYYY (รองรับ พ.ศ.) → YYYY-MM-DD"""
+    if not v: return None
+    import re as _re
+    s = str(v).strip()
+    m = _re.match(r'^(\d{4})-(\d{2})-(\d{2})$', s)
+    if m:
+        y = int(m.group(1))
+        if y >= 2500: y -= 543
+        return f"{y:04d}-{m.group(2)}-{m.group(3)}"
+    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$', s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100: y += 2000
+        if y >= 2500: y -= 543
+        return f"{y:04d}-{mo:02d}-{d:02d}"
+    return None
+
+
 @router.post("/policies/{policy_id}/attachments")
 async def upload_attachment(
     policy_id: str,
     doc_type: str = Form(...),
     label: str = Form(""),
     note: str = Form(""),
+    net_premium:    str = Form(""),
+    stamp_duty:     str = Form(""),
+    vat:            str = Form(""),
+    total_premium:  str = Form(""),
+    coverage_start: str = Form(""),
+    coverage_end:   str = Form(""),
     file: UploadFile = File(...),
 ):
-    """อัปโหลดเอกสารแนบใหม่ (พ.ร.บ. / สลักหลัง / อื่นๆ)"""
+    """อัปโหลดเอกสารแนบใหม่ (พ.ร.บ. / สลักหลัง / อื่นๆ) + เบี้ยถ้ามี"""
     if doc_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"doc_type ต้องเป็น {ALLOWED_TYPES}")
     if not file.filename.lower().endswith(".pdf"):
@@ -73,9 +107,9 @@ async def upload_attachment(
     if not pdf_url:
         raise HTTPException(status_code=500, detail="อัปโหลดไฟล์ไป storage ไม่สำเร็จ")
 
-    # บันทึก metadata
+    # บันทึก metadata + เบี้ย
     try:
-        result = supabase.table("policy_attachments").insert({
+        payload = {
             "policy_id": policy_id,
             "doc_type": doc_type,
             "label": label.strip() or None,
@@ -83,7 +117,14 @@ async def upload_attachment(
             "pdf_url": pdf_url,
             "pdf_filename": file.filename,
             "pdf_size": len(file_bytes),
-        }).execute()
+            "net_premium":   _to_float(net_premium),
+            "stamp_duty":    _to_float(stamp_duty),
+            "vat":           _to_float(vat),
+            "total_premium": _to_float(total_premium),
+            "coverage_start": _to_date(coverage_start),
+            "coverage_end":   _to_date(coverage_end),
+        }
+        result = supabase.table("policy_attachments").insert(payload).execute()
         return {"success": True, "data": result.data[0] if result.data else None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -91,9 +132,21 @@ async def upload_attachment(
 
 @router.put("/policies/{policy_id}/attachments/{attachment_id}")
 async def update_attachment(policy_id: str, attachment_id: str, data: dict):
-    """แก้ไข metadata (label, note) — ไม่แตะไฟล์"""
+    """แก้ไข metadata + เบี้ย — ไม่แตะไฟล์"""
     supabase = get_supabase()
-    allowed = {k: v for k, v in data.items() if k in ("label", "note", "doc_type")}
+    str_fields   = {"label", "note", "doc_type"}
+    float_fields = {"net_premium", "stamp_duty", "vat", "total_premium"}
+    date_fields  = {"coverage_start", "coverage_end"}
+
+    allowed = {}
+    for k, v in data.items():
+        if k in str_fields:
+            allowed[k] = (v or "").strip() or None if isinstance(v, str) else v
+        elif k in float_fields:
+            allowed[k] = _to_float(v)
+        elif k in date_fields:
+            allowed[k] = _to_date(v)
+
     if "doc_type" in allowed and allowed["doc_type"] not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="doc_type ไม่ถูกต้อง")
     try:

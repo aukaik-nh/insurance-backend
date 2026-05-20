@@ -18,6 +18,8 @@ LIST_COLUMNS = (
     "coverage_start, coverage_end, date_notify, date_cancel, date_policy_receive, "
     "net_premium, stamp_duty, vat, total_premium, "
     "third_party_per_person, third_party_per_accident, own_damage, "
+    "prepaid_tax_1pct, commission_pct, commission_baht, "
+    "wht_10pct, rounding, collected_amount, "
     "agent_code, broker_name, broker_license, notes, manually_edited, "
     "pdf_url, pdf_filename, pdf_size"
 )
@@ -56,15 +58,22 @@ async def get_policies(
     page: int = 1,
     limit: int = 20,
     search: str = Query(None),
-    sort: str = Query(None),       # column name
-    order: str = Query("desc"),    # "asc" | "desc"
+    sort: str = Query(None),
+    order: str = Query("desc"),
+    status: str = Query(None),      # "active" | "expiring" | "expired"
+    date_from: str = Query(None),   # YYYY-MM-DD — coverage_end >=
+    date_to: str = Query(None),     # YYYY-MM-DD — coverage_end <=
+    has_pdf: str = Query(None),     # "true" | "false"
 ):
+    from datetime import date, timedelta
     supabase = get_supabase()
     offset = (page - 1) * limit
 
-    # Validate sort column (whitelist)
     sort_col = sort if sort in SORTABLE else "created_at"
     is_desc  = (order or "desc").lower() != "asc"
+
+    today     = date.today().isoformat()
+    in30days  = (date.today() + timedelta(days=30)).isoformat()
 
     try:
         query = supabase.table("insurance_policies").select(LIST_COLUMNS, count="exact")
@@ -75,6 +84,23 @@ async def get_policies(
                 f"insured_name.ilike.%{search}%,"
                 f"license_plate.ilike.%{search}%"
             )
+
+        if status == "active":
+            query = query.gt("coverage_end", today)
+        elif status == "expiring":
+            query = query.gte("coverage_end", today).lte("coverage_end", in30days)
+        elif status == "expired":
+            query = query.lt("coverage_end", today)
+
+        if date_from:
+            query = query.gte("coverage_end", date_from)
+        if date_to:
+            query = query.lte("coverage_end", date_to)
+
+        if has_pdf == "true":
+            query = query.not_.is_("pdf_filename", "null")
+        elif has_pdf == "false":
+            query = query.is_("pdf_filename", "null")
 
         result = query.order(sort_col, desc=is_desc)\
                       .range(offset, offset + limit - 1)\

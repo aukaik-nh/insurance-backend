@@ -32,12 +32,17 @@ ALLOWED_COLUMNS = {
     "third_party_per_person", "third_party_per_accident", "own_damage",
     "broker_name", "broker_license", "manually_edited",
     "pdf_url", "pdf_filename", "pdf_data", "pdf_size", "notes",
+    # commission / หัก ณ ที่จ่าย / ปัดเศษ / เรียกเก็บ
+    "prepaid_tax_1pct", "commission_pct", "commission_baht",
+    "wht_10pct", "rounding", "collected_amount",
 }
 
 INT_FIELDS   = {"car_year", "pdf_size"}
 FLOAT_FIELDS = {"net_premium", "stamp_duty", "vat", "total_premium",
                 "third_party_per_person", "third_party_per_accident",
-                "own_damage", "sum_insured"}
+                "own_damage", "sum_insured",
+                "prepaid_tax_1pct", "commission_pct", "commission_baht",
+                "wht_10pct", "rounding", "collected_amount"}
 DATE_FIELDS  = {"coverage_start", "coverage_end",
                 "date_notify", "date_cancel", "date_policy_receive"}
 
