@@ -6,6 +6,7 @@ Attachments routes — เอกสารแนบหลายไฟล์ต่
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
 from supabase import create_client
+from functools import lru_cache
 import os, httpx, asyncio
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
@@ -18,6 +19,8 @@ _executor = ThreadPoolExecutor(max_workers=4)
 ALLOWED_TYPES = {"prb", "endorsement", "other"}
 
 
+# cache client at module level — reuse connection pool (ดู comment ใน routes/policies.py)
+@lru_cache(maxsize=1)
 def get_supabase():
     return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 

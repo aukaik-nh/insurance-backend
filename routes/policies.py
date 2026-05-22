@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import Response, RedirectResponse
 from supabase import create_client
+from functools import lru_cache
 import os
 import base64
 import httpx
@@ -28,6 +29,9 @@ LIST_COLUMNS = (
 DETAIL_COLUMNS = LIST_COLUMNS
 
 
+# cache client at module level — ทำให้ connection pool ของ httpx ถูก reuse ระหว่าง requests
+# (สร้างใหม่ทุกครั้ง = TLS handshake ใหม่ ~100-300ms ต่อ call บน Render free tier)
+@lru_cache(maxsize=1)
 def get_supabase():
     return create_client(
         os.getenv("SUPABASE_URL"),

@@ -4,6 +4,7 @@ from services.pdf_extractor import extract_text_from_pdf
 from services.claude_parser import parse_insurance_data
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
 from supabase import create_client
+from functools import lru_cache
 import os, json, traceback, uuid, asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -11,6 +12,8 @@ _executor = ThreadPoolExecutor(max_workers=4)
 
 router = APIRouter()
 
+# cache client at module level — reuse connection pool (ดู comment ใน routes/policies.py)
+@lru_cache(maxsize=1)
 def get_supabase():
     return create_client(
         os.getenv("SUPABASE_URL"),
