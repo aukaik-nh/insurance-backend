@@ -179,3 +179,8 @@ app.include_router(attachments.router, prefix="/api", tags=["Attachments"], depe
 @app.get("/")
 def root():
     return {"message": "Insurance API is running"}
+
+@app.get("/health")
+@app.head("/health")
+def health():
+    return {"ok": True}
