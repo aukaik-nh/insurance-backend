@@ -175,21 +175,33 @@ TM_CHEQUE_EN   = "Tokio Marine Safety Insurance (Thailand) Public Company Limite
 
 
 def _tm_header(c, W, H, MX):
-    """วาด Tokio Marine header (โลโก้ + ที่อยู่ EN/TH + TAX ID) ที่บนสุดของหน้า
-    คืน y position หลัง header (สำหรับให้ caller วาดต่อ)"""
+    """วาด Tokio Marine header (โลโก้ TM ซ้าย + ที่อยู่ EN/TH + TAX ID + โลโก้ประกันคุ้มภัยขวา)"""
     y = H - 18 * mm
 
-    # โลโก้ซ้าย (ถ้ามี)
+    # โลโก้ Tokio Marine ซ้าย — วงกลม "TOKIO MARINE" (placeholder จนกว่าจะมี TM logo จริง)
+    c.setStrokeColor(colors.HexColor("#002d72"))
+    c.setLineWidth(1.8)
+    c.circle(MX + 9 * mm, y - 3 * mm, 9 * mm, stroke=1, fill=0)
+    c.setFillColor(colors.HexColor("#002d72"))
+    c.setFont(_FONT_BOLD, 6.5)
+    c.drawCentredString(MX + 9 * mm, y - 2 * mm, "TOKIO")
+    c.drawCentredString(MX + 9 * mm, y - 5 * mm, "MARINE")
+
+    # โลโก้ประกันคุ้มภัย ขวา (แทน gold seal) — วางมุมขวาบน
+    seal_size = 16 * mm
+    seal_x = W - MX - seal_size
+    seal_y = y - 14 * mm
     if LOGO_PATH.exists():
         try:
             c.drawImage(ImageReader(str(LOGO_PATH)),
-                        MX, y - 13 * mm, width=20 * mm, height=20 * mm,
+                        seal_x, seal_y,
+                        width=seal_size, height=seal_size,
                         mask='auto', preserveAspectRatio=True)
         except Exception as e:
             print(f"[invoice] logo error: {e}")
 
     # ชื่อ + ที่อยู่ EN (กลาง-ซ้าย)
-    info_x = MX + 24 * mm
+    info_x = MX + 22 * mm
     c.setFillColor(INK)
     c.setFont(_FONT_BOLD, 10)
     c.drawString(info_x, y, TM_NAME_EN)
@@ -200,8 +212,8 @@ def _tm_header(c, W, H, MX):
         c.drawString(info_x, ty, line)
         ty -= 3 * mm
 
-    # ชื่อ + ที่อยู่ TH (ขวา) + TAX ID
-    rx = W - MX
+    # ชื่อ + ที่อยู่ TH (ขวา) — shift left เพื่อหลบโลโก้
+    rx = seal_x - 3 * mm  # right edge ของ text block (เว้นช่องว่าง 3mm จากโลโก้)
     c.setFillColor(INK)
     c.setFont(_FONT_BOLD, 9.5)
     c.drawRightString(rx, y, TM_NAME_TH)
@@ -212,7 +224,7 @@ def _tm_header(c, W, H, MX):
         c.drawRightString(rx, ty, line)
         ty -= 3 * mm
     c.setFont(_FONT_NORMAL, 7.5)
-    c.drawRightString(rx, ty - 1 * mm, f"เลขประจำตัวผู้เสียภาษี / ทะเบียนเลขที่: {TM_TAX_ID}")
+    c.drawRightString(rx, ty - 1 * mm, f"เลขประจำตัวผู้เสียภาษี: {TM_TAX_ID}")
 
     return y - 22 * mm
 
