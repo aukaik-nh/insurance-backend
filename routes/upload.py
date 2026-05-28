@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from services.pdf_extractor import extract_text_from_pdf
 from services.claude_parser import parse_insurance_data
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
-from supabase import create_client
+from services.supabase_shim import create_client
 from functools import lru_cache
 import os, json, traceback, uuid, asyncio
 from concurrent.futures import ThreadPoolExecutor

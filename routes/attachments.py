@@ -5,7 +5,7 @@ Attachments routes — เอกสารแนบหลายไฟล์ต่
 """
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
-from supabase import create_client
+from services.supabase_shim import create_client
 from functools import lru_cache
 import os, httpx, asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +27,11 @@ def get_supabase():
 
 def _is_supabase_storage_url(url: str) -> bool:
     return bool(url) and "/storage/v1/object/public/" in url
+
+def _is_r2_url(url: str) -> bool:
+    if not url: return False
+    r2_pub = os.getenv("R2_PUBLIC_URL", "")
+    return (r2_pub and url.startswith(r2_pub.rstrip("/"))) or ".r2.dev/" in url
 
 
 @router.get("/policies/{policy_id}/attachments")
@@ -178,19 +183,16 @@ async def delete_attachment(policy_id: str, attachment_id: str):
 
         pdf_url = row.data[0].get("pdf_url") or ""
 
-        # ลบจาก storage (ถ้าเป็น Supabase Storage)
-        if _is_supabase_storage_url(pdf_url):
+        # ลบจาก storage (รองรับทั้ง R2 และ Supabase legacy)
+        if _is_r2_url(pdf_url):
             try:
-                marker = "/storage/v1/object/public/"
-                idx = pdf_url.find(marker)
-                if idx != -1:
-                    rest = pdf_url[idx + len(marker):]
-                    parts = rest.split("/", 1)
-                    if len(parts) == 2:
-                        bucket, file_path = parts
-                        supabase.storage.from_(bucket).remove([file_path])
+                r2_pub = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
+                file_path = pdf_url.split("?", 1)[0].replace(r2_pub + "/", "", 1)
+                supabase.storage.from_(os.getenv("R2_BUCKET", "")).remove([file_path])
             except Exception as e:
-                print(f"[delete-attachment] storage cleanup failed: {e}")
+                print(f"[delete-attachment] R2 cleanup failed: {e}")
+        elif _is_supabase_storage_url(pdf_url):
+            print(f"[delete-attachment] legacy Supabase URL ข้าม cleanup")
 
         supabase.table("policy_attachments")\
             .delete()\

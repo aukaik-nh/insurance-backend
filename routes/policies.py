@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import Response, RedirectResponse
-from supabase import create_client
+from services.supabase_shim import create_client
 from functools import lru_cache
 import os
 import base64
@@ -46,8 +46,20 @@ def _drive_file_id(pdf_url: str) -> str | None:
 
 
 def _is_supabase_storage_url(pdf_url: str) -> bool:
-    """เช็คว่าเป็น Supabase Storage public URL หรือไม่"""
+    """เช็คว่าเป็น Supabase Storage public URL หรือไม่ (legacy)"""
     return bool(pdf_url) and "/storage/v1/object/public/" in pdf_url
+
+
+def _is_r2_url(pdf_url: str) -> bool:
+    """R2 public URL — pub-xxx.r2.dev หรือ custom domain"""
+    if not pdf_url: return False
+    r2_pub = os.getenv("R2_PUBLIC_URL", "")
+    return (r2_pub and pdf_url.startswith(r2_pub.rstrip("/"))) or ".r2.dev/" in pdf_url
+
+
+def _is_public_pdf_url(pdf_url: str) -> bool:
+    """เช็คว่า URL เป็น storage ที่ stream ผ่าน HTTP ได้"""
+    return _is_supabase_storage_url(pdf_url) or _is_r2_url(pdf_url)
 
 # Sortable columns (whitelist กัน SQL injection)
 SORTABLE = {
@@ -154,8 +166,8 @@ async def get_policy_pdf(policy_id: str, download: int = 0):
         pdf_url  = row.get("pdf_url") or ""
         pdf_b64  = row.get("pdf_data")
 
-        # ── Supabase Storage: stream bytes ผ่าน backend (กัน CORS + ปลอม URL) ──
-        if _is_supabase_storage_url(pdf_url):
+        # ── Public storage (Supabase legacy หรือ R2): stream bytes ผ่าน backend ──
+        if _is_public_pdf_url(pdf_url):
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     r = await client.get(pdf_url)
@@ -265,20 +277,17 @@ async def delete_policy_pdf(policy_id: str):
 
         pdf_url = result.data[0].get("pdf_url") or ""
 
-        # ลบจาก Storage (ถ้าเป็น Supabase Storage)
-        if _is_supabase_storage_url(pdf_url):
+        # ลบจาก Storage
+        if _is_r2_url(pdf_url):
             try:
-                # extract path: .../storage/v1/object/public/{bucket}/{path}
-                marker = "/storage/v1/object/public/"
-                idx = pdf_url.find(marker)
-                if idx != -1:
-                    rest = pdf_url[idx + len(marker):]
-                    parts = rest.split("/", 1)
-                    if len(parts) == 2:
-                        bucket, file_path = parts
-                        supabase.storage.from_(bucket).remove([file_path])
+                r2_pub = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
+                file_path = pdf_url.split("?", 1)[0].replace(r2_pub + "/", "", 1)
+                supabase.storage.from_(os.getenv("R2_BUCKET", "")).remove([file_path])
             except Exception as e:
-                print(f"[delete-pdf] Storage cleanup failed (ignored): {e}")
+                print(f"[delete-pdf] R2 cleanup failed (ignored): {e}")
+        elif _is_supabase_storage_url(pdf_url):
+            # legacy URLs — ไฟล์อาจถูกลบไปแล้วจาก Supabase
+            print(f"[delete-pdf] legacy Supabase URL ข้าม cleanup")
 
         # clear DB fields
         supabase.table("insurance_policies").update({

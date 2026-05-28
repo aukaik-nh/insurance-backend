@@ -129,9 +129,10 @@ $$;
 """
 
 def _run_migrations():
-    db_url = os.getenv("DATABASE_URL")
+    # priority: NEON_URL → DATABASE_URL_POOLER → DATABASE_URL
+    db_url = os.getenv("NEON_URL") or os.getenv("DATABASE_URL_POOLER") or os.getenv("DATABASE_URL")
     if not db_url:
-        print("[migration] DATABASE_URL ไม่พบ — ข้ามการสร้างตาราง")
+        print("[migration] DB URL ไม่พบ — ข้ามการสร้างตาราง")
         return
     try:
         conn = psycopg2.connect(db_url)

@@ -14,6 +14,7 @@ numpy
 pdfminer.six
 pytesseract
 psycopg2-binary
+boto3
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
