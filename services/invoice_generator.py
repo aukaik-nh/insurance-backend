@@ -235,6 +235,7 @@ def build_debit_note_template1(
     original_policy_no: str | None = None,
     note: str = "",
     series: str | None = None,
+    promptpay_target: str | None = None,
 ) -> bytes:
     """สร้าง DEBIT NOTE แบบ Tokio Marine (template 1 — แบบสั้น)"""
     _register_thai_fonts()
@@ -408,9 +409,38 @@ def build_debit_note_template1(
     c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 8.5)
     c.drawString(MX, y, f'Please pay by crossed cheque to  "{TM_CHEQUE_EN}"')
 
+    # ── QR PromptPay (ถ้ามี) ─────────────────────────────────────────
+    if promptpay_target:
+        try:
+            payload = generate_promptpay_payload(promptpay_target, total)
+            qr_png = generate_qr_image(payload)
+            qr_size = 35 * mm
+
+            y -= 6 * mm
+            c.setStrokeColor(LINE); c.setLineWidth(0.3)
+            c.line(MX, y + 4 * mm, W - MX, y + 4 * mm)
+
+            # QR ซ้าย
+            c.drawImage(ImageReader(io.BytesIO(qr_png)),
+                        MX, y - qr_size, width=qr_size, height=qr_size)
+            # ข้อความขวา QR
+            tx = MX + qr_size + 6 * mm
+            c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8.5)
+            c.drawString(tx, y - 3 * mm, "ชำระเงินผ่าน PromptPay")
+            c.setFillColor(INK); c.setFont(_FONT_BOLD, 12)
+            c.drawString(tx, y - 10 * mm, f"พร้อมเพย์ {promptpay_target}")
+            c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 9.5)
+            c.drawString(tx, y - 16 * mm, f"ยอด {baht_fmt(total)} บาท")
+            c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8)
+            c.drawString(tx, y - 21 * mm, "สแกน QR ผ่านแอปธนาคารเพื่อชำระเงิน")
+            y -= qr_size + 2 * mm
+
     # ── Note (if any) ────────────────────────────────────────────────
+        except Exception as e:
+            print(f"[invoice tm1] QR error: {e}")
+
     if note:
-        y -= 10 * mm
+        y -= 6 * mm
         c.setStrokeColor(LINE); c.setLineWidth(0.3)
         c.line(MX, y + 4 * mm, W - MX, y + 4 * mm)
         c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8.5)

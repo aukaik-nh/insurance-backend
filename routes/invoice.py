@@ -92,6 +92,7 @@ async def generate_invoice(req: InvoiceRequest):
                 original_policy_no = req.original_policy_no,
                 series            = req.series,
                 note              = req.note,
+                promptpay_target  = req.promptpay_target,
             )
         else:
             pdf_bytes = build_invoice_pdf(
