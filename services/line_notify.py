@@ -79,8 +79,10 @@ async def notify_noon():
 
 
 def start_scheduler():
-    scheduler.add_job(notify_early_morning, CronTrigger(hour=6,  minute=40))
-    scheduler.add_job(notify_morning,       CronTrigger(hour=9,  minute=0))
-    scheduler.add_job(notify_noon,          CronTrigger(hour=12, minute=0))
+    # day_of_week="mon-fri" → เฉพาะวันธรรมดา (ข้ามเสาร์/อาทิตย์)
+    weekday = {"day_of_week": "mon-fri"}
+    scheduler.add_job(notify_early_morning, CronTrigger(hour=6,  minute=40, **weekday))
+    scheduler.add_job(notify_morning,       CronTrigger(hour=9,  minute=0,  **weekday))
+    scheduler.add_job(notify_noon,          CronTrigger(hour=12, minute=0,  **weekday))
     scheduler.start()
-    print("[scheduler] ✓ ตั้งแจ้งเตือน 06:40, 09:00, 12:00 เรียบร้อย")
+    print("[scheduler] ✓ ตั้งแจ้งเตือน 06:40, 09:00, 12:00 (จันทร์-ศุกร์เท่านั้น)")
