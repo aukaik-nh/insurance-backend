@@ -12,7 +12,7 @@ import os, httpx, asyncio
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
-from routes.upload import _upload_pdf_to_storage, BUCKET_NAME
+from routes.upload import _upload_pdf_to_storage, BUCKET_NAME, _make_display_filename
 
 _executor_extract = ThreadPoolExecutor(max_workers=2)
 
@@ -155,6 +155,9 @@ async def upload_attachment(
     if not pdf_url:
         raise HTTPException(status_code=500, detail="อัปโหลดไฟล์ไป storage ไม่สำเร็จ")
 
+    # auto-rename pdf_filename ตามทะเบียน parent + ประเภท + ปี
+    display_filename = _make_display_filename(parent_plate, doc_type, final_ce)
+
     # บันทึก metadata + เบี้ย
     try:
         payload = {
@@ -163,7 +166,7 @@ async def upload_attachment(
             "label": final_label,
             "note": note.strip() or None,
             "pdf_url": pdf_url,
-            "pdf_filename": file.filename,
+            "pdf_filename": display_filename,
             "pdf_size": len(file_bytes),
             "net_premium":   final_net,
             "stamp_duty":    final_stamp,

@@ -52,6 +52,36 @@ DATE_FIELDS  = {"coverage_start", "coverage_end",
 BUCKET_NAME = "policy-pdfs"  # Supabase Storage bucket (primary)
 
 
+def _make_display_filename(plate: str | None, doc_type: str, coverage_end: str | None) -> str:
+    """ชื่อไฟล์สำหรับ display + download (ภาษาไทย OK)
+       รูปแบบ: '{ทะเบียน} {ประเภท}.{ปี พ.ศ. 2 หลัก}.pdf'
+       เช่น   '1ฒว4535กท พรบ.69.pdf'
+              '1กก8803 กธ.70.pdf'
+    """
+    type_thai = {
+        "prb": "พรบ",
+        "endorsement": "สลักหลัง",
+        "main": "กธ",
+    }.get(doc_type, "เอกสาร")
+
+    plate_clean = _re.sub(r'\s+', '', (plate or '').strip())
+    if not plate_clean:
+        plate_clean = "ไม่ทราบ"
+
+    yy = ""
+    if coverage_end:
+        m = _re.search(r'(\d{4})', str(coverage_end))
+        if m:
+            y = int(m.group(1))
+            if y < 2500:
+                y += 543
+            yy = str(y)[-2:]
+
+    if yy:
+        return f"{plate_clean} {type_thai}.{yy}.pdf"
+    return f"{plate_clean} {type_thai}.pdf"
+
+
 def _safe_storage_name(filename: str) -> str:
     """Storage key ต้องเป็น ASCII (Supabase requirement)
     ดึงตัวเลข + ASCII จาก filename + UUID สั้น
@@ -122,6 +152,29 @@ def _upload_pdf_to_storage(supabase, file_bytes: bytes, filename: str) -> str | 
     except Exception as e:
         print(f"[upload-storage] WARNING: ไม่สามารถอัปโหลด PDF ได้: {e}")
         return None
+
+
+@router.post("/preview-pdf")
+async def preview_pdf(file: UploadFile = File(...)):
+    """Extract เลขเบี้ย/วันที่จาก PDF ผ่าน Gemini — ไม่ upload, ไม่ save DB
+    ใช้สำหรับ pre-fill ตอนเลือกไฟล์ พ.ร.บ. บนหน้า /upload"""
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+    file_bytes = await file.read()
+    loop = asyncio.get_event_loop()
+    try:
+        parsed = await loop.run_in_executor(
+            _executor, lambda: parse_with_gemini(file_bytes, filename=file.filename) or {}
+        )
+    except Exception as e:
+        print(f"[preview-pdf] gemini error: {str(e)[:200]}")
+        parsed = {}
+    return {
+        "success": True,
+        "parsed": parsed,
+        "pdf_filename": file.filename,
+        "pdf_size": len(file_bytes),
+    }
 
 
 @router.post("/upload-pdf-only")
@@ -231,6 +284,14 @@ async def save_policy(data: dict):
                 save_data[k] = str(v).strip() or None
 
     save_data["manually_edited"] = True
+
+    # Auto-rename pdf_filename ตามทะเบียน + ปี (ถ้ามีไฟล์)
+    if save_data.get("pdf_url") or save_data.get("pdf_filename"):
+        save_data["pdf_filename"] = _make_display_filename(
+            save_data.get("license_plate"),
+            "main",
+            save_data.get("coverage_end"),
+        )
 
     print("[save-policy] saving:", save_data)
     if skipped:

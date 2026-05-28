@@ -1,0 +1,81 @@
+name: Weekly DB Backup
+
+# รัน:
+#  - Cron: ทุกวันอาทิตย์ 03:00 (ตามเวลาไทย = เสาร์ 20:00 UTC)
+#  - Manual: กดผ่าน Actions tab → "Run workflow"
+on:
+  schedule:
+    - cron: '0 20 * * 6'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Postgres client + awscli
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client awscli
+
+      - name: Dump Neon → SQL.gz
+        env:
+          NEON_URL: ${{ secrets.NEON_URL }}
+        run: |
+          set -e
+          TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
+          BACKUP_FILE="insurance_backup_${TIMESTAMP}.sql.gz"
+          echo "BACKUP_FILE=${BACKUP_FILE}" >> $GITHUB_ENV
+
+          pg_dump "${NEON_URL}" \
+            --no-owner \
+            --no-acl \
+            --no-comments \
+            --format=plain \
+          | gzip -9 > "${BACKUP_FILE}"
+
+          ls -lh "${BACKUP_FILE}"
+
+      - name: Upload to R2 backup bucket
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_BACKUP_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_KEY }}
+          AWS_DEFAULT_REGION:    auto
+          R2_ENDPOINT:           ${{ secrets.R2_ENDPOINT }}
+          R2_BACKUP_BUCKET:      ${{ secrets.R2_BACKUP_BUCKET }}
+        run: |
+          set -e
+          aws s3 cp "${BACKUP_FILE}" "s3://${R2_BACKUP_BUCKET}/${BACKUP_FILE}" \
+            --endpoint-url "${R2_ENDPOINT}"
+          echo "uploaded: s3://${R2_BACKUP_BUCKET}/${BACKUP_FILE}"
+
+      - name: Prune backups older than 90 days
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_BACKUP_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_KEY }}
+          AWS_DEFAULT_REGION:    auto
+          R2_ENDPOINT:           ${{ secrets.R2_ENDPOINT }}
+          R2_BACKUP_BUCKET:      ${{ secrets.R2_BACKUP_BUCKET }}
+        run: |
+          set -e
+          CUTOFF=$(date -u -d '90 days ago' +%Y-%m-%d)
+          aws s3 ls "s3://${R2_BACKUP_BUCKET}/" --endpoint-url "${R2_ENDPOINT}" \
+            | awk '{print $1, $4}' \
+            | while read d name; do
+                if [[ "$d" < "$CUTOFF" && -n "$name" ]]; then
+                  echo "deleting old: $name (uploaded $d)"
+                  aws s3 rm "s3://${R2_BACKUP_BUCKET}/$name" --endpoint-url "${R2_ENDPOINT}"
+                fi
+              done
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "### ✅ Backup complete" >> $GITHUB_STEP_SUMMARY
+          echo "- file: \`${BACKUP_FILE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- bucket: \`${{ secrets.R2_BACKUP_BUCKET }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- retention: 90 days" >> $GITHUB_STEP_SUMMARY
