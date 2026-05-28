@@ -175,58 +175,73 @@ TM_CHEQUE_EN   = "Tokio Marine Safety Insurance (Thailand) Public Company Limite
 
 
 def _tm_header(c, W, H, MX):
-    """วาด Tokio Marine header (โลโก้ TM ซ้าย + ที่อยู่ EN/TH + TAX ID + โลโก้ประกันคุ้มภัยขวา)"""
-    y = H - 18 * mm
+    """วาด Tokio Marine header — clean 3-column layout:
+       [TM logo] | EN address (left)  |  TH address (right) | [ประกันคุ้มภัย logo]"""
+    y = H - 16 * mm
 
-    # โลโก้ Tokio Marine ซ้าย — วงกลม "TOKIO MARINE" (placeholder จนกว่าจะมี TM logo จริง)
+    # ── คำนวณพื้นที่ ──
+    tm_logo_size = 16 * mm
+    seal_size    = 14 * mm
+    gutter       = 5 * mm
+
+    left_x   = MX + tm_logo_size + gutter            # EN text เริ่มที่นี่
+    seal_x   = W - MX - seal_size                     # ตำแหน่งโลโก้ขวา
+    right_rx = seal_x - gutter                        # TH text right edge
+    mid_x    = (left_x + right_rx) / 2                # จุดแบ่ง EN/TH
+    en_width = mid_x - left_x - 2 * mm                # available width EN
+    # th_width = right_rx - mid_x - 2 * mm
+
+    # ── 1. โลโก้ TM ซ้าย (วงกลม placeholder) ──
     c.setStrokeColor(colors.HexColor("#002d72"))
     c.setLineWidth(1.8)
-    c.circle(MX + 9 * mm, y - 3 * mm, 9 * mm, stroke=1, fill=0)
+    c.circle(MX + tm_logo_size/2, y - tm_logo_size/2 + 2 * mm,
+             tm_logo_size/2, stroke=1, fill=0)
     c.setFillColor(colors.HexColor("#002d72"))
-    c.setFont(_FONT_BOLD, 6.5)
-    c.drawCentredString(MX + 9 * mm, y - 2 * mm, "TOKIO")
-    c.drawCentredString(MX + 9 * mm, y - 5 * mm, "MARINE")
+    c.setFont(_FONT_BOLD, 6)
+    c.drawCentredString(MX + tm_logo_size/2, y - 2 * mm, "TOKIO")
+    c.drawCentredString(MX + tm_logo_size/2, y - 5 * mm, "MARINE")
 
-    # โลโก้ประกันคุ้มภัย ขวา (แทน gold seal) — วางมุมขวาบน
-    seal_size = 16 * mm
-    seal_x = W - MX - seal_size
-    seal_y = y - 14 * mm
+    # ── 2. โลโก้ประกันคุ้มภัย ขวา ──
     if LOGO_PATH.exists():
         try:
             c.drawImage(ImageReader(str(LOGO_PATH)),
-                        seal_x, seal_y,
+                        seal_x, y - seal_size + 2 * mm,
                         width=seal_size, height=seal_size,
                         mask='auto', preserveAspectRatio=True)
         except Exception as e:
             print(f"[invoice] logo error: {e}")
 
-    # ชื่อ + ที่อยู่ EN (กลาง-ซ้าย)
-    info_x = MX + 22 * mm
+    # ── 3. ชื่อ + ที่อยู่ EN (ซ้าย) — font เล็กลงให้พอดี ──
     c.setFillColor(INK)
-    c.setFont(_FONT_BOLD, 10)
-    c.drawString(info_x, y, TM_NAME_EN)
+    c.setFont(_FONT_BOLD, 8.5)
+    c.drawString(left_x, y, TM_NAME_EN)
     c.setFillColor(TEXT)
-    c.setFont(_FONT_NORMAL, 7.5)
-    ty = y - 3.5 * mm
+    c.setFont(_FONT_NORMAL, 6.8)
+    ty = y - 3.2 * mm
     for line in TM_ADDR_EN:
-        c.drawString(info_x, ty, line)
-        ty -= 3 * mm
+        c.drawString(left_x, ty, line)
+        ty -= 2.7 * mm
 
-    # ชื่อ + ที่อยู่ TH (ขวา) — shift left เพื่อหลบโลโก้
-    rx = seal_x - 3 * mm  # right edge ของ text block (เว้นช่องว่าง 3mm จากโลโก้)
+    # ── 4. ชื่อ + ที่อยู่ TH (ขวา) — drawRightString ที่ right_rx ──
     c.setFillColor(INK)
-    c.setFont(_FONT_BOLD, 9.5)
-    c.drawRightString(rx, y, TM_NAME_TH)
+    c.setFont(_FONT_BOLD, 8.5)
+    c.drawRightString(right_rx, y, TM_NAME_TH)
     c.setFillColor(TEXT)
-    c.setFont(_FONT_NORMAL, 7.5)
-    ty = y - 3.5 * mm
+    c.setFont(_FONT_NORMAL, 6.8)
+    ty = y - 3.2 * mm
     for line in TM_ADDR_TH:
-        c.drawRightString(rx, ty, line)
-        ty -= 3 * mm
-    c.setFont(_FONT_NORMAL, 7.5)
-    c.drawRightString(rx, ty - 1 * mm, f"เลขประจำตัวผู้เสียภาษี: {TM_TAX_ID}")
+        c.drawRightString(right_rx, ty, line)
+        ty -= 2.7 * mm
+    c.setFont(_FONT_NORMAL, 6.8)
+    c.drawRightString(right_rx, ty - 0.5 * mm,
+                      f"เลขประจำตัวผู้เสียภาษี: {TM_TAX_ID}")
 
-    return y - 22 * mm
+    # ── 5. divider line ──
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.5)
+    c.line(MX, y - 17 * mm, W - MX, y - 17 * mm)
+
+    return y - 20 * mm
 
 
 # ── Template 1: Tokio Marine DEBIT NOTE (simple) ──────────────────────
