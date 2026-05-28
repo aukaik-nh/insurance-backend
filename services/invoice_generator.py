@@ -17,12 +17,12 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 
 
-# ── Minimalist palette ─────────────────────────────────────────────
-INK    = colors.HexColor("#111827")  # near-black
-TEXT   = colors.HexColor("#374151")  # dark gray
-MUTED  = colors.HexColor("#9ca3af")  # light gray label
-LINE   = colors.HexColor("#e5e7eb")  # thin divider
-ACCENT = colors.HexColor("#000000")  # accent (use black for ultra-minimal)
+# ── Palette — เน้นอ่านง่าย (ดำเด่น เทาอ่อนเฉพาะเส้นแบ่ง) ──────────────
+INK    = colors.HexColor("#000000")  # pure black — main text
+TEXT   = colors.HexColor("#1a1a1a")  # near-black — body
+MUTED  = colors.HexColor("#333333")  # dark gray — secondary labels (ไม่เทาอ่อนแล้ว)
+LINE   = colors.HexColor("#cbd5e0")  # divider เท่านั้น
+ACCENT = colors.HexColor("#000000")
 
 _FONT_REGISTERED = False
 _FONT_NORMAL = "Tahoma"
