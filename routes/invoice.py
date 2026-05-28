@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from urllib.parse import quote
 
-from services.invoice_generator import build_invoice_pdf, build_debit_note_template1
+from services.invoice_generator import (
+    build_invoice_pdf,
+    build_debit_note_template1,
+    build_debit_note_template2,
+)
 
 router = APIRouter()
 
@@ -49,6 +53,28 @@ class InvoiceRequest(BaseModel):
     insurance_type: str | None = None   # "PERSONAL PROPERTY INSURANCE"
     original_policy_no: str | None = None
     series:         str | None = None   # "UPPOR0"
+
+    # ── tm2 specific ──
+    registration_no:   str | None = None  # "0107563000011" — TM registration #
+    sequence_no:       str | None = None  # "0001"
+    discount:          float = 0          # ส่วนลด
+    insured_occupation: str | None = None # อาชีพ Occupation
+    effective_date:    str | None = None  # "30/04/2026" — วันเริ่มประกัน
+    expiry_date:       str | None = None  # "30/04/2027"
+    effective_time:    str | None = None  # "16.30 น."
+    vehicle_code:      str | None = None  # "110"
+    car_make:          str | None = None  # "TOYOTA"
+    car_model:         str | None = None  # "COROLLA"
+    chassis_no:        str | None = None  # "MB2KLAAG900043133"
+    seats:             str | None = None  # "7/1800/-"
+    insurance_subtype: str | None = None  # "prb" | "comp" | "3rd" | "3rd_only" | "other"
+    sum_insured:       float = 0          # ทุนประกัน
+    accessories:       float = 0          # อุปกรณ์ตกแต่ง
+    use_of_vehicle:    str | None = None  # "ใช้ส่วนบุคคล ไม่ใช้รับจ้างหรือให้เช่า"
+    broker_name:       str | None = None
+    broker_code:       str | None = None  # "B200291"
+    agreement_date:    str | None = None  # "20/04/2026"
+    remark:            str | None = None  # หมายเหตุ Remark
 
 
 @router.post("/invoice/generate")
@@ -92,6 +118,44 @@ async def generate_invoice(req: InvoiceRequest):
                 original_policy_no = req.original_policy_no,
                 series            = req.series,
                 note              = req.note,
+                promptpay_target  = req.promptpay_target,
+            )
+        elif req.template == "tm2":
+            net   = sum(i.quantity * i.unit_price for i in req.items)
+            stamp = req.extra_fees.get("อากรแสตมป์", 0) or req.extra_fees.get("อากร", 0) or 0
+            extra_for_vat = sum(v for k, v in req.extra_fees.items()
+                                if k not in ("อากรแสตมป์", "อากร"))
+            vat = (net + extra_for_vat + stamp - (req.discount or 0)) * req.vat_rate
+
+            pdf_bytes = build_debit_note_template2(
+                invoice_no        = req.invoice_no,
+                invoice_date      = d,
+                buyer             = req.buyer.model_dump(),
+                net_premium       = net,
+                stamp_duty        = stamp,
+                vat               = vat,
+                discount          = req.discount or 0,
+                policy_no         = req.policy_no,
+                registration_no   = req.registration_no,
+                sequence_no       = req.sequence_no,
+                branch            = req.branch,
+                insured_occupation = req.insured_occupation,
+                effective_date    = req.effective_date,
+                expiry_date       = req.expiry_date,
+                effective_time    = req.effective_time,
+                vehicle_code      = req.vehicle_code,
+                car_make          = req.car_make,
+                car_model         = req.car_model,
+                chassis_no        = req.chassis_no,
+                seats             = req.seats,
+                insurance_subtype = req.insurance_subtype,
+                sum_insured       = req.sum_insured or 0,
+                accessories       = req.accessories or 0,
+                use_of_vehicle    = req.use_of_vehicle,
+                broker_name       = req.broker_name,
+                broker_code       = req.broker_code,
+                agreement_date    = req.agreement_date,
+                remark            = req.remark,
                 promptpay_target  = req.promptpay_target,
             )
         else:

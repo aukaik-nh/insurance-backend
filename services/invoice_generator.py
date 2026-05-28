@@ -460,6 +460,386 @@ def build_debit_note_template1(
     return buf.getvalue()
 
 
+# ── Template 2: Tokio Marine DEBIT NOTE COPY (detailed with vehicle) ──
+def build_debit_note_template2(
+    *,
+    invoice_no: str,
+    invoice_date: datetime,
+    buyer: dict,
+    net_premium: float,
+    stamp_duty: float = 0,
+    vat: float = 0,
+    discount: float = 0,
+    policy_no: str | None = None,
+    registration_no: str | None = None,
+    sequence_no: str | None = None,
+    branch: str | None = None,
+    insured_occupation: str | None = None,
+    effective_date: str | None = None,
+    expiry_date: str | None = None,
+    effective_time: str | None = None,
+    vehicle_code: str | None = None,
+    car_make: str | None = None,
+    car_model: str | None = None,
+    chassis_no: str | None = None,
+    seats: str | None = None,
+    insurance_subtype: str | None = None,  # "prb" | "comp" | "3rd" | "3rd_only" | "other"
+    sum_insured: float = 0,
+    accessories: float = 0,
+    use_of_vehicle: str | None = None,
+    broker_name: str | None = None,
+    broker_code: str | None = None,
+    agreement_date: str | None = None,
+    remark: str | None = None,
+    promptpay_target: str | None = None,
+) -> bytes:
+    """สร้าง DEBIT NOTE COPY แบบ Tokio Marine (template 2 — แบบละเอียดรวมข้อมูลรถ)"""
+    _register_thai_fonts()
+
+    sub_after_discount = net_premium - discount
+    total_after_stamp = sub_after_discount + stamp_duty
+    grand_total = total_after_stamp + vat
+    wht_1pct = round(net_premium * 0.01, 2)
+    commission_rate = 18.0
+    commission = round(net_premium * commission_rate / 100, 2)
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    MX = 14 * mm
+
+    # ── Header (Tokio Marine) ────────────────────────────────────────
+    y = _tm_header(c, W, H, MX)
+
+    # ── Top-left: TAX NO / Registration No / Policy Number ───────────
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX, y, "เลขประจำตัวผู้เสียภาษีอากร  TAX ID. NO.")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+    c.drawString(MX + 64 * mm, y, TM_TAX_ID)
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX, y - 5 * mm, "ทะเบียนเลขที่")
+    c.drawString(MX + 22 * mm, y - 5 * mm, "Registration No.")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+    c.drawString(MX + 50 * mm, y - 5 * mm, registration_no or TM_TAX_ID)
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX, y - 10 * mm, "กรมธรรม์เลขที่/ใบสลักหลังเลขที่")
+    c.drawString(MX + 42 * mm, y - 10 * mm, "Policy Number")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+    c.drawString(MX + 50 * mm, y - 15 * mm, policy_no or "—")
+
+    # Top-right: branch + เลขที่ + วันที่
+    rx = W - MX
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(rx - 70 * mm, y, "สาขา")
+    c.drawString(rx - 60 * mm, y, "Branch")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9.5)
+    c.drawString(rx - 40 * mm, y, branch or "สำนักงานใหญ่")
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(rx - 70 * mm, y - 5 * mm, "เลขที่")
+    c.drawString(rx - 65 * mm, y - 5 * mm, "No.")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9.5)
+    c.drawString(rx - 40 * mm, y - 5 * mm, invoice_no)
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(rx - 70 * mm, y - 10 * mm, "วันที่ Date")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 9.5)
+    c.drawString(rx - 40 * mm, y - 10 * mm, invoice_date.strftime("%d/%m/%Y"))
+
+    y -= 20 * mm
+
+    # ── Title centered ───────────────────────────────────────────────
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 15)
+    c.drawCentredString(W / 2, y, "สำเนาใบแจ้งหนี้")
+    c.setFont(_FONT_NORMAL, 10)
+    c.setFillColor(TEXT)
+    c.drawCentredString(W / 2, y - 5 * mm, "DEBIT NOTE COPY")
+
+    y -= 12 * mm
+
+    # ── Main grid: insured (left) + premium (right) ──────────────────
+    left_w = 115 * mm
+    right_x = MX + left_w
+    box_top = y; box_bottom = y - 65 * mm
+
+    c.setStrokeColor(LINE); c.setLineWidth(0.5)
+    c.rect(MX, box_bottom, W - 2 * MX, box_top - box_bottom, stroke=1, fill=0)
+    c.line(right_x, box_top, right_x, box_bottom)
+
+    # Left: Insured info
+    ly = box_top - 5 * mm
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX + 3 * mm, ly, "ชื่อผู้เอาประกันภัย Insured Name")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 10.5)
+    c.drawString(MX + 5 * mm, ly - 6 * mm, (buyer.get("name") or "—")[:55])
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX + 3 * mm, ly - 13 * mm, "ที่อยู่ Address")
+    c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 9)
+    addr = _wrap_text(buyer.get("address") or "", 60)
+    ay = ly - 18 * mm
+    for line in addr[:3]:
+        c.drawString(MX + 5 * mm, ay, line)
+        ay -= 4 * mm
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX + 3 * mm, box_bottom + 11 * mm, "อาชีพ Occupation")
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9.5)
+    c.drawString(MX + 5 * mm, box_bottom + 6 * mm, insured_occupation or "-")
+
+    # Right: Premium breakdown
+    rcol_x = right_x + 3 * mm
+    rcol_right = W - MX - 3 * mm
+
+    rows = [
+        ("เบี้ยประกันภัย",  "Premium",     net_premium, False),
+        ("ส่วนลด",           "Discount",    discount,    False),
+        ("อากรแสตมป์",       "Stamp Duty",  stamp_duty,  False),
+        ("รวมเงิน",           "Total",       total_after_stamp, True),
+        ("ภาษีมูลค่าเพิ่ม",  "VAT 7%",      vat,         False),
+    ]
+
+    row_h = (box_top - box_bottom - 14 * mm) / len(rows)  # leave bottom for grand total
+    rry = box_top - 4 * mm
+    for th, en, val, divider in rows:
+        c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+        c.drawString(rcol_x, rry, th)
+        c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+        c.drawString(rcol_x, rry - 3 * mm, en)
+        c.setFillColor(INK); c.setFont(_FONT_BOLD, 10)
+        c.drawRightString(rcol_right - 14, rry - 1.5 * mm, baht_fmt(val))
+        c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+        c.drawString(rcol_right - 10, rry - 1.5 * mm, "บาท")
+        c.drawString(rcol_right - 10, rry - 4.5 * mm, "Baht")
+        rry -= row_h
+        c.setStrokeColor(LINE); c.setLineWidth(0.3)
+        c.line(right_x + 2 * mm, rry + 1 * mm, W - MX - 2 * mm, rry + 1 * mm)
+
+    # Grand Total (last row)
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 10)
+    c.drawString(rcol_x, rry, "รวมเงินทั้งสิ้น")
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(rcol_x, rry - 3 * mm, "Grand Total")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 12)
+    c.drawRightString(rcol_right - 14, rry - 1.5 * mm, baht_fmt(grand_total))
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(rcol_right - 10, rry - 1.5 * mm, "บาท")
+    c.drawString(rcol_right - 10, rry - 4.5 * mm, "Baht")
+
+    # Seq line (above main box, in right margin) — like "Seq.: 0001"
+    if sequence_no:
+        c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8)
+        c.drawString(right_x + 3 * mm, box_top + 2 * mm, f"Seq. : {sequence_no}")
+
+    y = box_bottom - 4 * mm
+
+    # ── Vehicle period row ───────────────────────────────────────────
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 8.5)
+    c.drawString(MX, y, "วันเริ่มประกัน")
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX, y - 3 * mm, "Effective Date")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 10)
+    c.drawString(MX + 28 * mm, y, effective_date or "—")
+
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 8.5)
+    c.drawString(MX + 78 * mm, y, "วันหมดอายุ")
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX + 78 * mm, y - 3 * mm, "Expiry Date")
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 10)
+    c.drawString(MX + 105 * mm, y, expiry_date or "—")
+
+    if effective_time:
+        c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 9)
+        c.drawString(W - MX - 30 * mm, y, f"เวลา {effective_time}")
+
+    y -= 8 * mm
+
+    # ── Vehicle info table ───────────────────────────────────────────
+    tbl_top = y
+    tbl_bottom = y - 16 * mm
+    cols_x = [MX, MX + 12*mm, MX + 50*mm, MX + 86*mm, MX + 122*mm, W - MX]
+    headers = ["รหัส\nCode", "ชื่อรถยนต์\nMake/Model", "เลขทะเบียน\nLicense No.",
+               "เลขตัวถัง\nChassis No.", "จำนวนที่นั่ง/ขนาด/น้ำหนัก\nNo. of seats/Disp/GVW"]
+
+    c.setStrokeColor(LINE); c.setLineWidth(0.4)
+    # outer
+    c.rect(MX, tbl_bottom, W - 2 * MX, tbl_top - tbl_bottom, stroke=1, fill=0)
+    # vertical lines
+    for x in cols_x[1:-1]:
+        c.line(x, tbl_top, x, tbl_bottom)
+    # horizontal divider (after header)
+    c.line(MX, tbl_top - 8 * mm, W - MX, tbl_top - 8 * mm)
+
+    # headers
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    for i, h in enumerate(headers):
+        lines = h.split("\n")
+        for j, ln in enumerate(lines):
+            c.drawString(cols_x[i] + 2 * mm, tbl_top - 3.5 * mm - j * 3 * mm, ln)
+
+    # values
+    values = [
+        vehicle_code or "—",
+        " ".join(filter(None, [car_make, car_model])) or "—",
+        buyer.get("license_plate") or "—",
+        chassis_no or "—",
+        seats or "—",
+    ]
+    c.setFillColor(INK); c.setFont(_FONT_BOLD, 10)
+    for i, v in enumerate(values):
+        c.drawString(cols_x[i] + 2 * mm, tbl_top - 12 * mm, str(v)[:18])
+
+    y = tbl_bottom - 4 * mm
+
+    # ── Insurance type checkboxes ────────────────────────────────────
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX, y, "ประเภทการประกันภัย")
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX, y - 3 * mm, "Type of Insurance")
+
+    # 5 options with checkboxes
+    options = [
+        ("prb",       "พ.ร.บ.",       "Compulsory"),
+        ("comp",      "ประเภท 1",     "Comprehensive"),
+        ("3rd",       "ประเภท 2",     "Third Party,Fire & Theft"),
+        ("3rd_only",  "ประเภท 3",     "Third Party Only"),
+        ("other",     "อื่นๆ",         "Other"),
+    ]
+    opt_x = MX + 32 * mm
+    for key, th, en in options:
+        checked = (insurance_subtype == key)
+        # box
+        c.setStrokeColor(INK); c.setLineWidth(0.6)
+        c.rect(opt_x, y - 1 * mm, 3 * mm, 3 * mm, stroke=1, fill=0)
+        if checked:
+            c.setFont(_FONT_BOLD, 9)
+            c.drawString(opt_x + 0.5 * mm, y - 0.4 * mm, "X")
+        c.setFillColor(INK); c.setFont(_FONT_NORMAL, 8.5)
+        c.drawString(opt_x + 4.5 * mm, y, th)
+        c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+        c.drawString(opt_x + 4.5 * mm, y - 3 * mm, en)
+        opt_x += 35 * mm
+
+    y -= 9 * mm
+
+    # ── Sum Insured + Accessories ────────────────────────────────────
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX, y, "จำนวนเงินเอาประกันภัย Sum Insured")
+    c.setFont(_FONT_BOLD, 10)
+    c.drawString(MX + 58 * mm, y, baht_fmt(sum_insured))
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX + 82 * mm, y, "บาท Baht")
+
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX + 100 * mm, y, "อุปกรณ์ตกแต่งเพิ่ม Accessories")
+    c.setFont(_FONT_BOLD, 10)
+    c.drawString(MX + 145 * mm, y, baht_fmt(accessories))
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX + 168 * mm, y, "บาท")
+
+    y -= 7 * mm
+
+    # ── Use of vehicle + Broker ──────────────────────────────────────
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX, y, "การใช้รถยนต์ Use of vehicle")
+    c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX + 42 * mm, y, use_of_vehicle or "ใช้ส่วนบุคคล ไม่ใช้รับจ้างหรือให้เช่า")
+
+    y -= 5 * mm
+    c.drawString(MX, y, "นายหน้า / ตัวแทน Broker / Agent")
+    c.setFont(_FONT_BOLD, 9.5)
+    bk = " ".join(filter(None, [broker_code, broker_name]))
+    c.drawString(MX + 50 * mm, y, bk or "—")
+
+    if agreement_date:
+        c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8)
+        c.drawString(W - MX - 80 * mm, y, "วันที่สัญญาประกันภัย Agreement made on")
+        c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+        c.drawRightString(W - MX, y, agreement_date)
+
+    y -= 7 * mm
+    c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 8.5)
+    c.drawString(MX, y, "โปรดจ่ายเป็นเช็คขีดคร่อม ในนาม")
+    c.setFont(_FONT_BOLD, 9)
+    c.drawString(MX + 48 * mm, y, f'"{TM_CHEQUE_TH}"')
+
+    y -= 6 * mm
+
+    # ── Remark + Commission ──────────────────────────────────────────
+    c.setStrokeColor(LINE); c.setLineWidth(0.3)
+    c.line(MX, y, W - MX, y)
+    y -= 4 * mm
+
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX, y, "หมายเหตุ Remark")
+    if broker_code:
+        c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+        c.drawString(MX + 24 * mm, y, broker_code)
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawString(MX, y - 4 * mm, "Ins.")
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 9)
+    c.drawString(MX + 24 * mm, y - 4 * mm, (buyer.get("name") or "")[:55])
+
+    # commission box (right)
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8)
+    c.drawString(W - MX - 65 * mm, y - 4 * mm, "กรณีผู้เอาประกันภัยเป็นนิติบุคคล หักภาษี ณ ที่จ่าย 1%")
+    c.drawString(W - MX - 20 * mm, y - 4 * mm, f"= {baht_fmt(wht_1pct)} บาท")
+
+    c.setFillColor(INK); c.setFont(_FONT_NORMAL, 8.5)
+    c.drawString(W - MX - 65 * mm, y - 9 * mm, "ค่าคอมมิชชั่น")
+    c.drawString(W - MX - 50 * mm, y - 9 * mm, "Commission")
+    c.setFont(_FONT_BOLD, 9.5)
+    c.drawString(W - MX - 28 * mm, y - 9 * mm, f"{commission_rate:.3f}%")
+    c.drawRightString(W - MX, y - 9 * mm, baht_fmt(commission))
+
+    y -= 18 * mm
+
+    # ── Authorized signature box (right) ─────────────────────────────
+    sig_x = W - MX - 70 * mm
+    c.setStrokeColor(LINE); c.setLineWidth(0.4)
+    c.line(sig_x, y, W - MX, y)
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7.5)
+    c.drawCentredString(sig_x + 35 * mm, y - 4 * mm, "ผู้รับมอบอำนาจ Authorized Signature")
+
+    # broker signature (bottom-left)
+    c.line(MX, y, MX + 80 * mm, y)
+    c.drawCentredString(MX + 40 * mm, y - 4 * mm, "นายหน้า/ตัวแทน Broker / Agent")
+    if broker_code:
+        c.setFillColor(INK); c.setFont(_FONT_BOLD, 9)
+        c.drawCentredString(MX + 40 * mm, y + 2 * mm, broker_code)
+
+    # ── QR (if any) ──────────────────────────────────────────────────
+    if promptpay_target:
+        try:
+            payload = generate_promptpay_payload(promptpay_target, grand_total)
+            qr_png = generate_qr_image(payload)
+            qr_size = 28 * mm
+            y -= 16 * mm
+            c.drawImage(ImageReader(io.BytesIO(qr_png)),
+                        MX, y - qr_size, width=qr_size, height=qr_size)
+            tx = MX + qr_size + 5 * mm
+            c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 8)
+            c.drawString(tx, y - 3 * mm, "ชำระเงินผ่าน PromptPay")
+            c.setFillColor(INK); c.setFont(_FONT_BOLD, 11)
+            c.drawString(tx, y - 9 * mm, f"พร้อมเพย์ {promptpay_target}")
+            c.setFillColor(TEXT); c.setFont(_FONT_NORMAL, 9)
+            c.drawString(tx, y - 14 * mm, f"ยอด {baht_fmt(grand_total)} บาท")
+        except Exception as e:
+            print(f"[invoice tm2] QR error: {e}")
+
+    # ── Footer refs ──────────────────────────────────────────────────
+    c.setFillColor(MUTED); c.setFont(_FONT_NORMAL, 7)
+    c.drawString(MX, 8 * mm, "UPJRR0")
+    c.drawString(MX, 5 * mm, invoice_date.strftime("%d/%m/%Y"))
+    c.drawRightString(W - MX, 5 * mm, "V_VD-12-S")
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def _wrap_text(text: str, max_chars: int) -> list[str]:
     """แบ่งบรรทัดง่ายๆ ตาม max_chars (ไม่ตัดคำกลาง)"""
     if not text: return []
