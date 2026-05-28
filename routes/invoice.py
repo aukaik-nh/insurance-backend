@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from urllib.parse import quote
 
-from services.invoice_generator import build_invoice_pdf
+from services.invoice_generator import build_invoice_pdf, build_debit_note_template1
 
 router = APIRouter()
 
@@ -32,10 +32,23 @@ class InvoiceRequest(BaseModel):
     seller: Party
     buyer: Party
     items: list[Item]
-    extra_fees: dict[str, float] = {}   # {"อากร": 10, "บุคคลภายนอก": 200}
+    extra_fees: dict[str, float] = {}   # {"อากรแสตมป์": 10, "บุคคลภายนอก": 200}
     vat_rate: float = 0.07
     promptpay_target: str | None = None  # phone 10 digits or ID 13 digits
     note: str = ""
+
+    # ── template selection ──
+    template: str = "default"           # "default" | "tm1" | "tm2"
+
+    # ── extra fields ใช้กับ template tm1/tm2 ──
+    coverage_start: str | None = None   # "15/05/2026" (display only)
+    coverage_end:   str | None = None
+    policy_no:      str | None = None   # กรมธรรม์เลขที่
+    endorsement_no: str | None = None   # สลักหลังเลขที่
+    branch:         str | None = None   # สาขา
+    insurance_type: str | None = None   # "PERSONAL PROPERTY INSURANCE"
+    original_policy_no: str | None = None
+    series:         str | None = None   # "UPPOR0"
 
 
 @router.post("/invoice/generate")
@@ -54,17 +67,44 @@ async def generate_invoice(req: InvoiceRequest):
         if not req.items:
             raise HTTPException(400, "ต้องมีอย่างน้อย 1 รายการ")
 
-        pdf_bytes = build_invoice_pdf(
-            invoice_no       = req.invoice_no,
-            invoice_date     = d,
-            seller           = req.seller.model_dump(),
-            buyer            = req.buyer.model_dump(),
-            items            = [i.model_dump() for i in req.items],
-            extra_fees       = req.extra_fees,
-            vat_rate         = req.vat_rate,
-            promptpay_target = req.promptpay_target,
-            note             = req.note,
-        )
+        # ── Template Tokio Marine 1 ─────────────────────────────────
+        if req.template == "tm1":
+            net   = sum(i.quantity * i.unit_price for i in req.items)
+            stamp = req.extra_fees.get("อากรแสตมป์", 0) or req.extra_fees.get("อากร", 0) or 0
+            # vat = (net + extra) * vat_rate
+            extra_for_vat = sum(v for k, v in req.extra_fees.items()
+                                if k not in ("อากรแสตมป์", "อากร"))
+            vat = (net + extra_for_vat + stamp) * req.vat_rate
+
+            pdf_bytes = build_debit_note_template1(
+                invoice_no        = req.invoice_no,
+                invoice_date      = d,
+                buyer             = req.buyer.model_dump(),
+                net_premium       = net,
+                stamp_duty        = stamp,
+                vat               = vat,
+                coverage_start    = req.coverage_start,
+                coverage_end      = req.coverage_end,
+                policy_no         = req.policy_no,
+                endorsement_no    = req.endorsement_no,
+                branch            = req.branch,
+                insurance_type    = req.insurance_type,
+                original_policy_no = req.original_policy_no,
+                series            = req.series,
+                note              = req.note,
+            )
+        else:
+            pdf_bytes = build_invoice_pdf(
+                invoice_no       = req.invoice_no,
+                invoice_date     = d,
+                seller           = req.seller.model_dump(),
+                buyer            = req.buyer.model_dump(),
+                items            = [i.model_dump() for i in req.items],
+                extra_fees       = req.extra_fees,
+                vat_rate         = req.vat_rate,
+                promptpay_target = req.promptpay_target,
+                note             = req.note,
+            )
 
         filename = f"invoice_{req.invoice_no.replace('/', '_')}.pdf"
         safe_name = quote(filename)
