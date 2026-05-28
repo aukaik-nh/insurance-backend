@@ -6,12 +6,15 @@ Attachments routes — เอกสารแนบหลายไฟล์ต่
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
 from services.supabase_shim import create_client
+from services.gemini_parser import parse_with_gemini, is_available as gemini_available
 from functools import lru_cache
 import os, httpx, asyncio
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from routes.upload import _upload_pdf_to_storage, BUCKET_NAME
+
+_executor_extract = ThreadPoolExecutor(max_workers=2)
 
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -103,12 +106,49 @@ async def upload_attachment(
     supabase = get_supabase()
 
     # ตรวจว่ามี policy อยู่จริง
-    policy = supabase.table("insurance_policies").select("id").eq("id", policy_id).execute()
+    policy = supabase.table("insurance_policies").select("id, license_plate").eq("id", policy_id).execute()
     if not policy.data:
         raise HTTPException(status_code=404, detail="ไม่พบกรมธรรม์")
+    parent_plate = policy.data[0].get("license_plate") or ""
 
-    # อัปโหลดไป Supabase Storage
     loop = asyncio.get_event_loop()
+
+    # ── Auto-extract เลขเบี้ย (เฉพาะ พ.ร.บ. ที่ user ไม่ได้กรอกเอง) ──────────────
+    auto = {}
+    needs_extract = (
+        doc_type == "prb"
+        and not net_premium and not total_premium
+        and gemini_available()
+    )
+    if needs_extract:
+        try:
+            auto = await loop.run_in_executor(
+                _executor_extract,
+                lambda: parse_with_gemini(file_bytes, filename=file.filename) or {}
+            )
+            print(f"[attach-prb] AI extract → net={auto.get('net_premium')} total={auto.get('total_premium')}")
+        except Exception as e:
+            print(f"[attach-prb] AI extract failed (ignored): {str(e)[:200]}")
+            auto = {}
+
+    # ใช้ค่าจาก form ก่อน → fallback ไปค่า AI extract
+    final_net   = _to_float(net_premium)   if net_premium   else auto.get("net_premium")
+    final_stamp = _to_float(stamp_duty)    if stamp_duty    else auto.get("stamp_duty")
+    final_vat   = _to_float(vat)           if vat           else auto.get("vat")
+    final_total = _to_float(total_premium) if total_premium else auto.get("total_premium")
+    final_cs    = _to_date(coverage_start) if coverage_start else _to_date(auto.get("coverage_start"))
+    final_ce    = _to_date(coverage_end)   if coverage_end   else _to_date(auto.get("coverage_end"))
+
+    # auto-generate label ถ้าไม่ได้ใส่ — "พ.ร.บ. ปี {YY}"
+    final_label = label.strip() if label.strip() else None
+    if not final_label and doc_type == "prb" and final_ce:
+        try:
+            year_ce = int(final_ce.split("-", 1)[0]) + 543  # ค.ศ. → พ.ศ.
+            final_label = f"พ.ร.บ. ปี {year_ce}"
+        except Exception:
+            pass
+
+    # อัปโหลดไป Storage
     pdf_url = await loop.run_in_executor(
         _executor, lambda: _upload_pdf_to_storage(supabase, file_bytes, file.filename)
     )
@@ -120,17 +160,17 @@ async def upload_attachment(
         payload = {
             "policy_id": policy_id,
             "doc_type": doc_type,
-            "label": label.strip() or None,
+            "label": final_label,
             "note": note.strip() or None,
             "pdf_url": pdf_url,
             "pdf_filename": file.filename,
             "pdf_size": len(file_bytes),
-            "net_premium":   _to_float(net_premium),
-            "stamp_duty":    _to_float(stamp_duty),
-            "vat":           _to_float(vat),
-            "total_premium": _to_float(total_premium),
-            "coverage_start": _to_date(coverage_start),
-            "coverage_end":   _to_date(coverage_end),
+            "net_premium":   final_net,
+            "stamp_duty":    final_stamp,
+            "vat":           final_vat,
+            "total_premium": final_total,
+            "coverage_start": final_cs,
+            "coverage_end":   final_ce,
         }
         result = supabase.table("policy_attachments").insert(payload).execute()
         return {"success": True, "data": result.data[0] if result.data else None}
