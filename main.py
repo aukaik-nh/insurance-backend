@@ -150,7 +150,9 @@ app = FastAPI(title="Insurance API", version="1.0.0")
 
 @app.on_event("startup")
 async def startup():
-    start_scheduler()
+    # LINE notification scheduler disabled — ส่งผิดเวลา
+    # start_scheduler()
+    pass
 
 app.add_middleware(
     CORSMiddleware,
@@ -176,7 +178,8 @@ app.include_router(upload.router,      prefix="/api", tags=["Upload"],      depe
 app.include_router(policies.router,    prefix="/api", tags=["Policies"],    dependencies=_auth)
 app.include_router(invoice.router,     prefix="/api", tags=["Invoice"],     dependencies=_auth)
 app.include_router(attachments.router, prefix="/api", tags=["Attachments"], dependencies=_auth)
-app.include_router(notify.router,      prefix="/api", tags=["Notify"],      dependencies=_auth)
+# notify router disabled — ปิดแจ้งเตือน LINE ทั้งหมด (ส่งผิดเวลา)
+# app.include_router(notify.router,      prefix="/api", tags=["Notify"],      dependencies=_auth)
 
 @app.get("/")
 def root():
