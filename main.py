@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routes import upload, policies, invoice, attachments, auth as auth_routes
+from routes import upload, policies, invoice, attachments, notify, auth as auth_routes
 from routes.auth import require_auth
 from services.line_notify import start_scheduler
 from dotenv import load_dotenv
@@ -176,6 +176,7 @@ app.include_router(upload.router,      prefix="/api", tags=["Upload"],      depe
 app.include_router(policies.router,    prefix="/api", tags=["Policies"],    dependencies=_auth)
 app.include_router(invoice.router,     prefix="/api", tags=["Invoice"],     dependencies=_auth)
 app.include_router(attachments.router, prefix="/api", tags=["Attachments"], dependencies=_auth)
+app.include_router(notify.router,      prefix="/api", tags=["Notify"],      dependencies=_auth)
 
 @app.get("/")
 def root():
