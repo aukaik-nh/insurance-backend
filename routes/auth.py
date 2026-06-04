@@ -60,8 +60,9 @@ async def login(request: Request):
     valid_user = os.getenv("APP_USERNAME", "admin")
     valid_pass = os.getenv("APP_PASSWORD", "admin1234")
 
-    if username != valid_user or password != valid_pass:
+    # username เทียบแบบ case-insensitive (กัน UX bug "Admin" vs "admin")
+    if username.lower() != valid_user.lower() or password != valid_pass:
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
-    token = make_token(username)
-    return {"token": token, "username": username}
+    token = make_token(valid_user)
+    return {"token": token, "username": valid_user}
