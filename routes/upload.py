@@ -83,15 +83,51 @@ def _make_display_filename(plate: str | None, doc_type: str, coverage_end: str |
 
 
 def _safe_storage_name(filename: str) -> str:
-    """Storage key ต้องเป็น ASCII (Supabase requirement)
-    ดึงตัวเลข + ASCII จาก filename + UUID สั้น
-    เช่น 'กก5226 พรบ66.pdf' → '5226_66_a3f2c1.pdf'"""
+    """[DEPRECATED] เก็บไว้ backward compat กับ /upload-pdf-only route"""
     stem = os.path.splitext(filename)[0]
     ext  = os.path.splitext(filename)[1].lower() or ".pdf"
     parts = _re.findall(r'[A-Za-z0-9\-]+', stem)
     base  = '_'.join(parts)[:60] if parts else ''
     short = uuid.uuid4().hex[:6]
     return f"{base}_{short}{ext}" if base else f"{short}{ext}"
+
+
+_ILLEGAL_FS = _re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+def _baby78_storage_key(filename: str, supabase) -> str:
+    """ตั้ง storage key แบบ Baby78: ใช้ชื่อ Thai ตรงๆ
+    ถ้าชื่อซ้ำ → เติม _0001, _0002 (เหมือน Baby78)
+    คืน key พร้อม prefix 'policies/'"""
+    fname = _ILLEGAL_FS.sub('', filename).strip()
+    if not fname: fname = "unknown.pdf"
+    if not fname.lower().endswith(".pdf"):
+        fname += ".pdf"
+
+    bucket = os.getenv("R2_BUCKET", "insurance-pdfs")
+    # ตรวจ duplicate ด้วย R2 head_object
+    try:
+        import boto3
+        from botocore.client import Config
+        s3 = boto3.client("s3",
+            endpoint_url=os.getenv("R2_ENDPOINT"),
+            aws_access_key_id=os.getenv("R2_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("R2_SECRET_KEY"),
+            config=Config(signature_version="s3v4"))
+        base_key = f"policies/{fname}"
+        key = base_key
+        n = 0
+        while n < 100:
+            try:
+                s3.head_object(Bucket=bucket, Key=key)
+                # exists → next suffix
+                n += 1
+                stem, ext = fname.rsplit(".", 1)
+                key = f"policies/{stem}_{n:04d}.{ext}"
+            except Exception:
+                return key
+        return base_key  # fallback after 100 collisions
+    except Exception:
+        return f"policies/{fname}"
 
 
 def _clean_thai_number(val: str) -> str:
@@ -128,27 +164,19 @@ def _normalize_date(val: str) -> str | None:
 
 
 def _upload_pdf_to_storage(supabase, file_bytes: bytes, filename: str) -> str | None:
-    """
-    อัปโหลด PDF ไปยัง Supabase Storage bucket 'policy-pdfs'
-    Storage path: policies/{safe_filename}_{short_id}.pdf
-    คืนค่า public URL หรือ None ถ้าล้มเหลว
-    """
+    """อัปโหลด PDF → R2 ด้วย Baby78 naming convention (ชื่อ Thai ตรงๆ)
+    Storage key: policies/{thai_filename}.pdf (เติม _0001 ถ้าซ้ำ)"""
     try:
-        unique_name  = _safe_storage_name(filename)
-        storage_path = f"policies/{unique_name}"
-
+        storage_path = _baby78_storage_key(filename, supabase)
         supabase.storage.from_(BUCKET_NAME).upload(
             path=storage_path,
             file=file_bytes,
             file_options={"content-type": "application/pdf"},
         )
-
-        # supabase-py v1 คืน string, v2 คืน object
         url_res = supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
         if isinstance(url_res, str):
             return url_res
         return url_res.get("publicUrl") or url_res.get("publicURL") or str(url_res)
-
     except Exception as e:
         print(f"[upload-storage] WARNING: ไม่สามารถอัปโหลด PDF ได้: {e}")
         return None
