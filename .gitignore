@@ -22,6 +22,16 @@ batch_import_log.json
 batch_import_output.txt
 update_notes_log.txt
 match_progress.json
+match_r2_progress.json
+match_r2_nomatch.json
+match_record_progress.json
+match_record_nofile.json
+audit_v2_report.json
+preflight_data_report.json
+preflight_pdf_report.json
+# debug/one-shot scripts (kept locally only)
+test_mdb_python.py
+sample_pa_records.py
 
 # Claude Code local config
 .claude/
