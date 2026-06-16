@@ -52,21 +52,29 @@ DATE_FIELDS  = {"coverage_start", "coverage_end",
 BUCKET_NAME = "policy-pdfs"  # Supabase Storage bucket (primary)
 
 
-def _make_display_filename(plate: str | None, doc_type: str, coverage_end: str | None) -> str:
+def _make_display_filename(
+    plate: str | None,
+    doc_type: str,
+    coverage_end: str | None,
+    policy_type: str | None = None,
+    address: str | None = None,
+    name: str | None = None,
+) -> str:
     """ชื่อไฟล์สำหรับ display + download (ภาษาไทย OK)
-       รูปแบบ: '{ทะเบียน} {ประเภท}.{ปี พ.ศ. 2 หลัก}.pdf'
+       เลือก identifier ตามประเภทกรมธรรม์:
+         - พ.ร.บ. (doc_type=prb)      → '{ทะเบียน} พรบ.{ปี}.pdf'
+         - ประกันรถยนต์ (M/STY)        → '{ทะเบียน} กธ.{ปี}.pdf'
+         - อัคคีภัย/ทรัพย์สิน (FIRE)   → '{ที่อยู่} กธ.{ปี}.pdf'
+         - PA/TA/MISC ฯลฯ              → '{ชื่อ} กธ.{ปี}.pdf'
        เช่น   '1ฒว4535กท พรบ.69.pdf'
               '1กก8803 กธ.70.pdf'
+              'นาย กขค กธ.69.pdf'
     """
     type_thai = {
         "prb": "พรบ",
         "endorsement": "สลักหลัง",
         "main": "กธ",
     }.get(doc_type, "เอกสาร")
-
-    plate_clean = _re.sub(r'\s+', '', (plate or '').strip())
-    if not plate_clean:
-        plate_clean = "ไม่ทราบ"
 
     yy = ""
     if coverage_end:
@@ -77,9 +85,32 @@ def _make_display_filename(plate: str | None, doc_type: str, coverage_end: str |
                 y += 543
             yy = str(y)[-2:]
 
+    plate_clean = _re.sub(r'\s+', '', (plate or '').strip())
+    name_clean    = (name or '').strip()
+    # ที่อยู่: ตัดเอาแค่ส่วนต้น (เลขที่ + ชื่อสถานที่) ไม่ให้ชื่อไฟล์ยาวเกิน
+    address_short = (address or '').strip().split('\n', 1)[0][:40].strip()
+
+    pt = (policy_type or "").upper().strip()
+    FIRE_TYPES = {"FIRE", "ASSET", "IAR", "BURGLAR"}
+    NAME_TYPES = {"PA", "TA", "3RD", "PUBLIC", "MISC", "GOLF", "MARINE"}
+
+    # ── เลือก identifier ตามประเภทเอกสาร + ประเภทกรมธรรม์ ──
+    if doc_type == "prb":
+        ident = plate_clean  # พ.ร.บ. → ใช้ทะเบียนเสมอ
+    elif pt in FIRE_TYPES:
+        ident = address_short or plate_clean or name_clean
+    elif pt in NAME_TYPES:
+        ident = name_clean or plate_clean
+    else:
+        # ประกันรถยนต์ (M/STY) หรือไม่ระบุ → ใช้ทะเบียน
+        ident = plate_clean or name_clean or address_short
+
+    if not ident:
+        ident = "ไม่ทราบ"
+
     if yy:
-        return f"{plate_clean} {type_thai}.{yy}.pdf"
-    return f"{plate_clean} {type_thai}.pdf"
+        return f"{ident} {type_thai}.{yy}.pdf"
+    return f"{ident} {type_thai}.pdf"
 
 
 def _safe_storage_name(filename: str) -> str:
@@ -313,13 +344,21 @@ async def save_policy(data: dict):
 
     save_data["manually_edited"] = True
 
-    # Auto-rename pdf_filename ตามทะเบียน + ปี (ถ้ามีไฟล์)
+    # Auto-rename pdf_filename ตามประเภทกรมธรรม์ (ถ้ามีไฟล์)
+    # motor → ทะเบียน, fire → ที่อยู่, PA/TA → ชื่อ
+    # ⚠️ เคารพชื่อที่ frontend ส่งมา ถ้ามี — frontend ใช้ computeDisplayFilename() ตั้งชื่ออัตโนมัติ
+    # ตรงกับ backend อยู่แล้ว (WYSIWYG) เว้นแต่ user จะแก้ชื่อเอง → ก็เก็บตามที่แก้
     if save_data.get("pdf_url") or save_data.get("pdf_filename"):
-        save_data["pdf_filename"] = _make_display_filename(
-            save_data.get("license_plate"),
-            "main",
-            save_data.get("coverage_end"),
-        )
+        provided = save_data.get("pdf_filename")
+        if not provided:
+            save_data["pdf_filename"] = _make_display_filename(
+                plate=save_data.get("license_plate"),
+                doc_type="main",
+                coverage_end=save_data.get("coverage_end"),
+                policy_type=save_data.get("policy_type"),
+                address=save_data.get("insured_address"),
+                name=save_data.get("insured_name"),
+            )
 
     print("[save-policy] saving:", save_data)
     if skipped:

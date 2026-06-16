@@ -105,11 +105,17 @@ async def upload_attachment(
     file_bytes = await file.read()
     supabase = get_supabase()
 
-    # ตรวจว่ามี policy อยู่จริง
-    policy = supabase.table("insurance_policies").select("id, license_plate").eq("id", policy_id).execute()
+    # ตรวจว่ามี policy อยู่จริง — ดึง field ที่จำเป็นสำหรับ auto-rename ชื่อไฟล์
+    policy = supabase.table("insurance_policies").select(
+        "id, license_plate, policy_type, insured_address, insured_name"
+    ).eq("id", policy_id).execute()
     if not policy.data:
         raise HTTPException(status_code=404, detail="ไม่พบกรมธรรม์")
-    parent_plate = policy.data[0].get("license_plate") or ""
+    parent = policy.data[0]
+    parent_plate       = parent.get("license_plate") or ""
+    parent_policy_type = parent.get("policy_type") or ""
+    parent_address     = parent.get("insured_address") or ""
+    parent_name        = parent.get("insured_name") or ""
 
     loop = asyncio.get_event_loop()
 
@@ -155,8 +161,15 @@ async def upload_attachment(
     if not pdf_url:
         raise HTTPException(status_code=500, detail="อัปโหลดไฟล์ไป storage ไม่สำเร็จ")
 
-    # auto-rename pdf_filename ตามทะเบียน parent + ประเภท + ปี
-    display_filename = _make_display_filename(parent_plate, doc_type, final_ce)
+    # auto-rename pdf_filename — พ.ร.บ. ใช้ทะเบียน, สลักหลังตามประเภทกรมธรรม์ parent
+    display_filename = _make_display_filename(
+        plate=parent_plate,
+        doc_type=doc_type,
+        coverage_end=final_ce,
+        policy_type=parent_policy_type,
+        address=parent_address,
+        name=parent_name,
+    )
 
     # บันทึก metadata + เบี้ย
     try:
