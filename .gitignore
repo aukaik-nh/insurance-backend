@@ -19,6 +19,8 @@ batch_progress.json
 migrate_storage_progress.json
 batch_upload_log.txt
 batch_import_log.json
+batch_import_neon_log.json
+batch_import_neon_run.log
 batch_import_output.txt
 update_notes_log.txt
 match_progress.json

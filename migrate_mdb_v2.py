@@ -120,6 +120,30 @@ def row_to_supabase(r: dict) -> dict:
         "agent_code":          agent_code,
         "broker_name":         broker_name,
         "notes":               safe_str(r.get("remark1")),
+        # premium breakdown (Baby78 → existing schema)
+        "prepaid_tax_1pct":    safe_float(r.get("onepercent")),
+        "commission_pct":      safe_float(r.get("discountper")),
+        "commission_baht":     safe_float(r.get("comm")) or safe_float(r.get("agentcomm")),
+        # Baby78 extras (added via migration 002)
+        "email":               safe_str(r.get("email")),
+        "prefix":              safe_str(r.get("prefix")),
+        "keyby":               safe_str(r.get("keyby")),
+        "seat":                safe_int(r.get("seat")),
+        "cc":                  safe_int(r.get("cc")),
+        "weight":              safe_int(r.get("weight")),
+        "equipment":           safe_str(r.get("equipment")),
+        "car_code":            safe_str(r.get("carcodeprb")),
+        "app_prb":             safe_str(r.get("appprb")),
+        "app_next":            safe_str(r.get("appnext")),
+        "date_insurance":      fmt_date(r.get("dateinsurance")),
+        "date_car_tax":        fmt_date(r.get("datecartax")),
+        "date_sent":           fmt_date(r.get("datesent")),
+        "driver1_name":        safe_str(r.get("namethai1")),
+        "driver1_birth":       fmt_date(r.get("datebirth1")),
+        "driver2_name":        safe_str(r.get("namethai2")),
+        "driver2_birth":       fmt_date(r.get("datebirth2")),
+        "theft":               safe_float(r.get("theft")),
+        "deductible":          safe_float(r.get("deduct")),
         "manually_edited":     False,
     }
 
@@ -171,12 +195,18 @@ def main():
 
     sql = f"""
     SELECT app, policy, insurance, policytype, newrenew,
-           namethai, telephone,
+           namethai, telephone, email, prefix, keyby,
            address1, address2, province, postcode,
            license, licenseprovince, chasis,
            model, modelyear, damage,
+           seat, cc, weight, equipment, carcodeprb,
            datestart, dateend, datereceive, datecancel, datenotify,
+           dateinsurance, datecartax, datesent,
            netpremium, stamp, vat, totalpremium,
+           onepercent, discountper, comm, agentcomm,
+           theft, deduct,
+           appprb, appnext,
+           namethai1, datebirth1, namethai2, datebirth2,
            agent, kpp, remark1
     FROM zzapp
     WHERE policy IS NOT NULL
