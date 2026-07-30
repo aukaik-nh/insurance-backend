@@ -11,7 +11,7 @@ Flow:  POST /batch/extract  → อัปไฟล์เข้า staging + AI �
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback
+import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
 from services.supabase_shim import create_client
@@ -22,7 +22,7 @@ from routes.upload import (
 )
 
 router = APIRouter()
-_executor = ThreadPoolExecutor(max_workers=4)   # คุม concurrency ไม่ให้ยิง AI ถล่ม
+_executor = ThreadPoolExecutor(max_workers=2)   # คุม concurrency ไม่ให้ชน rate limit ฟรีของ Gemini
 
 STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
 MAX_FILES = 300
@@ -109,13 +109,24 @@ async def batch_extract(files: list[UploadFile] = File(...)):
                 rec["parsed"] = {}
                 rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
                 return rec
-            try:
-                with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
-                    rec["parsed"] = parse_with_gemini(fh.read(),
-                                                      filename=rec["orig_filename"]) or {}
-            except Exception as e:
-                rec["parsed"] = {}
-                rec["parse_error"] = str(e)[:200]
+            with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
+                blob = fh.read()
+            # retry เมื่อชนลิมิต Gemini (429/RESOURCE_EXHAUSTED) — free tier RPM ต่ำ
+            for attempt in range(3):
+                try:
+                    rec["parsed"] = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
+                    rec.pop("parse_error", None)
+                    return rec
+                except Exception as e:
+                    msg = str(e)
+                    is_rate = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+                    if is_rate and attempt < 2:
+                        time.sleep(10 * (attempt + 1))   # 10s, 20s แล้วลองใหม่
+                        continue
+                    rec["parsed"] = {}
+                    rec["parse_error"] = ("โควตา Gemini หมด/ชนลิมิต (429) — ลองไฟล์น้อยลง หรืออัปเกรด API key"
+                                          if is_rate else msg[:200])
+                    return rec
             return rec
 
         await asyncio.gather(*[loop.run_in_executor(_executor, _read_one, r) for r in staged])
