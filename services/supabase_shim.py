@@ -127,6 +127,11 @@ class _QueryBuilder:
         self._filters.append((frag, params))
         return self
 
+    def raw_filter(self, frag: str, params: list | None = None):
+        """escape hatch — เพิ่ม WHERE fragment ดิบ (ต้อง parameterize เอง ผ่าน %s)
+        ใช้ตอน .or_() แสดง expression ไม่ได้ เช่น REPLACE(col,' ','') ILIKE %s"""
+        return self._add_filter(frag, list(params or []))
+
     def eq(self, col, val):    return self._add_filter(f"{_ident(col)} = %s", [val])
     def neq(self, col, val):   return self._add_filter(f"{_ident(col)} <> %s", [val])
     def gt(self, col, val):    return self._add_filter(f"{_ident(col)} > %s", [val])

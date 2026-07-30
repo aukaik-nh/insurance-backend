@@ -3,6 +3,7 @@ from fastapi.responses import Response, RedirectResponse
 from services.supabase_shim import create_client
 from functools import lru_cache
 import os
+import re
 import base64
 import httpx
 from urllib.parse import quote
@@ -95,10 +96,16 @@ async def get_policies(
         query = supabase.table("insurance_policies").select(LIST_COLUMNS, count="exact")
 
         if search:
-            query = query.or_(
-                f"policy_number.ilike.%{search}%,"
-                f"insured_name.ilike.%{search}%,"
-                f"license_plate.ilike.%{search}%"
+            s = search.strip()
+            like = f"%{s}%"
+            # ทะเบียนรถ: normalize เว้นวรรคทั้งฝั่ง DB และคำค้น — "ถต 9706" / "ถต9706" ให้เจอเหมือนกัน
+            plate_norm = "%" + re.sub(r"\s+", "", s) + "%"
+            # ค้นทะเบียนรถ + ชื่อคน เป็นหลักก่อน แล้วค่อยเลขกรมธรรม์
+            query = query.raw_filter(
+                "(REPLACE(license_plate, ' ', '') ILIKE %s "
+                "OR insured_name ILIKE %s "
+                "OR policy_number ILIKE %s)",
+                [plate_norm, like, like],
             )
 
         if status == "active":
