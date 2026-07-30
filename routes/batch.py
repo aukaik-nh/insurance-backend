@@ -56,6 +56,100 @@ def _save_manifest(batch_id: str, data: dict) -> None:
         json.dump(data, fh, ensure_ascii=False, indent=1)
 
 
+# ── progress (แยกไฟล์เล็ก ให้ client poll ระหว่างอ่าน) ──────────────
+def _progress_path(batch_id: str) -> str:
+    return os.path.join(_batch_dir(batch_id), "progress.json")
+
+
+def _write_progress(batch_id: str, **kw) -> None:
+    try:
+        with open(_progress_path(batch_id), "w", encoding="utf-8") as fh:
+            json.dump(kw, fh, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _read_progress(batch_id: str) -> dict:
+    p = _progress_path(batch_id)
+    if not os.path.exists(p):
+        return {"status": "unknown", "done": 0, "total": 0, "current": None}
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {"status": "processing", "done": 0, "total": 0, "current": None}
+
+
+def _read_one_file(bdir: str, rec: dict) -> dict:
+    """อ่าน 1 ไฟล์ด้วย Gemini + retry เมื่อชนลิมิต (429) — รันใน thread pool"""
+    if rec["same_file_as"]:
+        rec["parsed"] = {}
+        rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
+        return rec
+    with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
+        blob = fh.read()
+    for attempt in range(3):
+        try:
+            rec["parsed"] = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
+            rec.pop("parse_error", None)
+            return rec
+        except Exception as e:
+            msg = str(e)
+            is_rate = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+            if is_rate and attempt < 2:
+                time.sleep(10 * (attempt + 1))   # 10s, 20s แล้วลองใหม่
+                continue
+            rec["parsed"] = {}
+            rec["parse_error"] = ("โควตา Gemini หมด/ชนลิมิต (429) — ลองไฟล์น้อยลง หรืออัปเกรด API key"
+                                  if is_rate else msg[:200])
+            return rec
+    return rec
+
+
+async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
+    """อ่านทุกไฟล์เบื้องหลัง + อัปเดต progress ทีละไฟล์ → จับคู่ → เขียน manifest"""
+    total = len(staged)
+    try:
+        loop = asyncio.get_event_loop()
+        if not gemini_available():
+            for r in staged:
+                r["parsed"] = {}
+                r["parse_error"] = "ยังไม่ได้ตั้งค่า GEMINI_API_KEY — AI อ่านไฟล์ไม่ได้"
+            _write_progress(batch_id, status="processing", done=total, total=total, current=None)
+        else:
+            done = 0
+            sem = asyncio.Semaphore(2)   # จำกัด concurrency กัน rate limit
+
+            async def _one(r):
+                nonlocal done
+                async with sem:
+                    await loop.run_in_executor(_executor, _read_one_file, bdir, r)
+                done += 1
+                _write_progress(batch_id, status="processing", done=done, total=total,
+                                current=r.get("orig_filename"))
+
+            await asyncio.gather(*[_one(r) for r in staged])
+
+        records = []
+        for r in staged:
+            rec = dict(r.get("parsed") or {})
+            rec["file_id"]       = r["file_id"]
+            rec["orig_filename"] = r["orig_filename"]
+            rec["parse_error"]   = r.get("parse_error")
+            rec["same_file_as"]  = r.get("same_file_as")
+            records.append(rec)
+
+        unique, dups = doc_pairing.dedupe(records)
+        result = doc_pairing.pair_documents(unique)
+        result["duplicates"] = dups
+        result["summary"]["duplicates"] = len(dups)
+        _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": result})
+        _write_progress(batch_id, status="done", done=total, total=total, current=None)
+    except Exception as e:
+        print("[batch-process] ERROR:\n", traceback.format_exc())
+        _write_progress(batch_id, status="error", done=0, total=total, current=None, error=str(e)[:200])
+
+
 # ── 1) อัป + อ่าน + จับคู่ ──────────────────────────────────────────
 @router.post("/batch/extract")
 async def batch_extract(files: list[UploadFile] = File(...)):
@@ -95,61 +189,18 @@ async def batch_extract(files: list[UploadFile] = File(...)):
         shutil.rmtree(bdir, ignore_errors=True)
         raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF")
 
-    # ── ให้ AI อ่าน (ข้ามไฟล์ที่ซ้ำเป๊ะ) ──
-    if not gemini_available():
-        # ไม่มี key → คืนโครงว่างพร้อมบอกสาเหตุ ให้หน้าเว็บแสดงได้ว่าติดอะไร
-        for r in staged:
-            r["parsed"] = {}
-            r["parse_error"] = "ยังไม่ได้ตั้งค่า GEMINI_API_KEY — AI อ่านไฟล์ไม่ได้"
-    else:
-        loop = asyncio.get_event_loop()
+    # ── เริ่มอ่านเบื้องหลัง แล้วให้ client poll /progress ดูความคืบหน้าทีละไฟล์ ──
+    _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": None})
+    _write_progress(batch_id, status="processing", done=0, total=len(staged), current=None)
+    asyncio.create_task(_process_batch(batch_id, bdir, staged))
 
-        def _read_one(rec: dict) -> dict:
-            if rec["same_file_as"]:
-                rec["parsed"] = {}
-                rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
-                return rec
-            with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
-                blob = fh.read()
-            # retry เมื่อชนลิมิต Gemini (429/RESOURCE_EXHAUSTED) — free tier RPM ต่ำ
-            for attempt in range(3):
-                try:
-                    rec["parsed"] = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
-                    rec.pop("parse_error", None)
-                    return rec
-                except Exception as e:
-                    msg = str(e)
-                    is_rate = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
-                    if is_rate and attempt < 2:
-                        time.sleep(10 * (attempt + 1))   # 10s, 20s แล้วลองใหม่
-                        continue
-                    rec["parsed"] = {}
-                    rec["parse_error"] = ("โควตา Gemini หมด/ชนลิมิต (429) — ลองไฟล์น้อยลง หรืออัปเกรด API key"
-                                          if is_rate else msg[:200])
-                    return rec
-            return rec
+    return {"success": True, "batch_id": batch_id, "total": len(staged), "status": "processing"}
 
-        await asyncio.gather(*[loop.run_in_executor(_executor, _read_one, r) for r in staged])
 
-    # ── จัดประเภท + จับคู่ ──
-    records = []
-    for r in staged:
-        rec = dict(r.get("parsed") or {})
-        rec["file_id"]       = r["file_id"]
-        rec["orig_filename"] = r["orig_filename"]
-        rec["parse_error"]   = r.get("parse_error")
-        rec["same_file_as"]  = r.get("same_file_as")
-        records.append(rec)
-
-    unique, dups = doc_pairing.dedupe(records)
-    result = doc_pairing.pair_documents(unique)
-    result["duplicates"] = dups
-    result["summary"]["duplicates"] = len(dups)
-
-    manifest = {"batch_id": batch_id, "files": staged, "result": result}
-    _save_manifest(batch_id, manifest)
-
-    return {"success": True, "batch_id": batch_id, **result}
+# ── 1.5) ถามความคืบหน้าระหว่างอ่าน ─────────────────────────────────
+@router.get("/batch/{batch_id}/progress")
+async def batch_progress(batch_id: str):
+    return {"success": True, **_read_progress(batch_id)}
 
 
 # ── 2) ดึงผลกลับมาแสดง ─────────────────────────────────────────────
