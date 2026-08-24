@@ -15,7 +15,7 @@ doc_pairing.py — จัดประเภทเอกสาร + จับค�
 import re
 from difflib import SequenceMatcher
 
-from services.filename_matcher_v2 import norm_plate, coverage_year_ad
+from services.filename_matcher_v2 import norm_plate, coverage_year_ad, parse_filename
 
 
 # ── ชนิดเอกสาร ────────────────────────────────────────────────────
@@ -35,10 +35,13 @@ SCORE_PLATE_MATCH   = 30
 SCORE_YEAR_MATCH    = 15
 SCORE_NAME_SIMILAR  = 10
 SCORE_CAR_MATCH     = 5
-PENALTY_CHASSIS_DIFF = -40   # มีเลขตัวถังทั้งคู่แต่คนละเลข = คนละคันแน่นอน
+SCORE_FILENAME_PLATE = 20    # ชื่อไฟล์มาตรฐาน Baby78 มีทะเบียนรถอยู่ต้นชื่อ
+SCORE_FILENAME_YEAR  = 5
+PENALTY_YEAR_DIFF    = -20
 
 THRESHOLD_AUTO   = 50        # >= จับอัตโนมัติ
 THRESHOLD_REVIEW = 30        # >= ให้คนยืนยัน, ต่ำกว่านี้ = กำพร้า
+MIN_AUTO_MARGIN   = 15        # คะแนนต้องทิ้งอันดับสองพอสมควร จึงไม่จับคู่ผิดในรถทะเบียนซ้ำ
 
 
 # ── normalize ─────────────────────────────────────────────────────
@@ -76,6 +79,12 @@ def _car_key(rec: dict) -> str:
 def _year(rec: dict) -> int | None:
     """ปีคุ้มครอง (ค.ศ.) — รองรับทั้ง พ.ศ. และ ค.ศ."""
     return coverage_year_ad(rec)
+
+
+def _filename_info(rec: dict) -> dict:
+    """อ่าน hint จากชื่อไฟล์ที่ตั้งตามระบบเดิม เช่น '1กก8803 กธ.70.pdf'."""
+    filename = rec.get("orig_filename") or rec.get("pdf_filename") or rec.get("filename") or ""
+    return parse_filename(str(filename)) if filename else {"kind": "unknown", "key": "", "year_be": None}
 
 
 # ── จัดประเภท (fallback เมื่อ AI ไม่ได้บอก doc_type มา) ──────────────
@@ -123,8 +132,8 @@ def score_pair(main: dict, prb: dict) -> tuple[int, list[str]]:
             score += SCORE_CHASSIS_EXACT
             why.append("เลขตัวถังตรง")
         else:
-            score += PENALTY_CHASSIS_DIFF
-            why.append("เลขตัวถังไม่ตรง")
+            # VIN เป็นตัวระบุรถที่แน่นอนที่สุด ห้ามให้ field อื่นชดเชยแล้วจับคู่ข้ามคัน
+            return -999, ["เลขตัวถังไม่ตรง"]
 
     pm, pp = norm_plate(main.get("license_plate")), norm_plate(prb.get("license_plate"))
     if pm and pp and pm == pp:
@@ -135,6 +144,9 @@ def score_pair(main: dict, prb: dict) -> tuple[int, list[str]]:
     if ym and yp and ym == yp:
         score += SCORE_YEAR_MATCH
         why.append("ปีคุ้มครองตรง")
+    elif ym and yp and ym != yp:
+        score += PENALTY_YEAR_DIFF
+        why.append("ปีคุ้มครองต่างกัน")
 
     if _name_similarity(main.get("insured_name"), prb.get("insured_name")) >= 0.85:
         score += SCORE_NAME_SIMILAR
@@ -144,6 +156,15 @@ def score_pair(main: dict, prb: dict) -> tuple[int, list[str]]:
     if km and kp and (km in kp or kp in km):
         score += SCORE_CAR_MATCH
         why.append("รุ่นรถตรง")
+
+    fm, fp = _filename_info(main), _filename_info(prb)
+    if fm.get("kind") == fp.get("kind") == "plate":
+        if norm_plate(fm.get("key")) == norm_plate(fp.get("key")):
+            score += SCORE_FILENAME_PLATE
+            why.append("ทะเบียนในชื่อไฟล์ตรง")
+            if fm.get("year_be") and fp.get("year_be") and fm["year_be"] == fp["year_be"]:
+                score += SCORE_FILENAME_YEAR
+                why.append("ปีในชื่อไฟล์ตรง")
 
     return score, why
 
@@ -180,6 +201,13 @@ def pair_documents(records: list[dict]) -> dict:
                 candidates.append((score, why, m, p))
     candidates.sort(key=lambda c: c[0], reverse=True)
 
+    # คะแนนที่ดีที่สุดอันดับสองของแต่ละเอกสาร ใช้กัน greedy matcher เลือกคู่ผิด
+    # เมื่อทะเบียน/ชื่อเหมือนกันหลายคัน ระบบจะเปลี่ยนเป็น "ต้องตรวจ" แทนเดาเอง.
+    alternatives_main, alternatives_prb = {}, {}
+    for score, _why, m, p in candidates:
+        alternatives_main.setdefault(id(m), []).append((score, id(p)))
+        alternatives_prb.setdefault(id(p), []).append((score, id(m)))
+
     used_main, used_prb, pairs = set(), set(), []
     for score, why, m, p in candidates:
         mk, pk = id(m), id(p)
@@ -187,12 +215,27 @@ def pair_documents(records: list[dict]) -> dict:
             continue          # ตัวใดตัวหนึ่งถูกจับไปแล้ว
         used_main.add(mk)
         used_prb.add(pk)
+        best_other = max(
+            [s for s, other in alternatives_main.get(mk, []) if other != pk]
+            + [s for s, other in alternatives_prb.get(pk, []) if other != mk]
+            + [-999]
+        )
+        margin = score - best_other if best_other > -999 else score
+        has_vehicle_anchor = "เลขตัวถังตรง" in why or (
+            "ทะเบียนตรง" in why and "ปีคุ้มครองตรง" in why
+        ) or (
+            "ทะเบียนในชื่อไฟล์ตรง" in why and "ปีในชื่อไฟล์ตรง" in why
+        )
+        status = "auto" if (
+            score >= THRESHOLD_AUTO and has_vehicle_anchor and margin >= MIN_AUTO_MARGIN
+        ) else "review"
         pairs.append({
             "main":    m,
             "prb":     p,
             "score":   score,
             "reasons": why,
-            "status":  "auto" if score >= THRESHOLD_AUTO else "review",
+            "status":  status,
+            "margin":  margin,
         })
 
     orphan_main = [m for m in mains if id(m) not in used_main]
