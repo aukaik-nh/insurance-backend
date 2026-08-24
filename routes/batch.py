@@ -9,6 +9,7 @@ Flow:  POST /batch/extract  → อัปไฟล์เข้า staging + AI �
 จนกว่าจะเรียก /commit — ออกแบบตามหลัก "AI เร่งงาน ไม่ใช่ตัดสินใจแทน"
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
@@ -253,6 +254,32 @@ async def batch_progress(batch_id: str):
 async def batch_get(batch_id: str):
     m = _load_manifest(batch_id)
     return {"success": True, "batch_id": batch_id, **m["result"]}
+
+
+@router.get("/batch/{batch_id}/files/{file_id}/pdf")
+async def batch_preview_pdf(batch_id: str, file_id: str):
+    """ส่ง PDF จาก staging สำหรับตรวจผล AI ก่อน commit.
+
+    ไฟล์ยังอยู่เฉพาะ temporary batch directory และ endpoint จะอนุญาตเฉพาะ
+    file_id ที่ระบุไว้ใน manifest ของกองนั้น จึงไม่สามารถใช้ path traversal
+    เพื่ออ่านไฟล์อื่นบน server ได้.
+    """
+    manifest = _load_manifest(batch_id)
+    staged = next((item for item in manifest.get("files", []) if item.get("file_id") == file_id), None)
+    if not staged:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์ในกองนี้")
+
+    safe_id = os.path.basename(file_id)
+    path = os.path.join(_batch_dir(batch_id), f"{safe_id}.pdf")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="ไฟล์ชั่วคราวหมดอายุหรือถูกล้างแล้ว")
+
+    filename = os.path.basename(staged.get("orig_filename") or f"{safe_id}.pdf")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 # ── 3) commit เฉพาะที่คนยืนยัน ─────────────────────────────────────
