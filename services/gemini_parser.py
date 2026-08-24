@@ -1,7 +1,5 @@
 import os, json, re
 
-import fitz
-
 
 def _log(message: str) -> None:
     """Log ได้แม้ Windows console ตั้ง code page ที่ไม่รองรับภาษาไทย."""
@@ -229,11 +227,19 @@ def is_available():
 
 
 def _ai_page_count() -> int:
-    """จำนวนหน้าที่ส่งให้ AI เป็นมาตรการควบคุมต้นทุน ไม่ใช่เพดานจำนวนไฟล์."""
+    """จำนวนหน้าที่ส่งให้ AI ต่อไฟล์; จำกัด RAM ของ Render Free."""
     try:
-        return max(1, min(int(os.getenv("AI_PDF_MAX_PAGES", "2")), 3))
+        return max(1, min(int(os.getenv("AI_PDF_MAX_PAGES", "1")), 2))
     except ValueError:
-        return 2
+        return 1
+
+
+def _ai_render_dpi() -> int:
+    """144 DPI อ่านตารางไทยชัด แต่ใช้ RAM น้อยกว่า 200 DPI มาก."""
+    try:
+        return max(120, min(int(os.getenv("AI_PDF_RENDER_DPI", "144")), 170))
+    except ValueError:
+        return 144
 
 
 def _render_pdf_for_vision(file_bytes: bytes) -> tuple[list[bytes], str]:
@@ -242,15 +248,22 @@ def _render_pdf_for_vision(file_bytes: bytes) -> tuple[list[bytes], str]:
     PDF ต้นฉบับไม่ถูกแก้ไขและไม่ถูกแปลงเพื่อเก็บข้อมูล; รูปเหล่านี้อยู่ในหน่วยความจำ
     เฉพาะระหว่างการอ่าน แล้ว PDF เดิมจะถูกอัปขึ้น Cloudflare R2 ตอนบันทึก.
     """
+    # Lazy import: PyMuPDF ไม่อยู่ใน working set ของ web service จนกว่าจะมีไฟล์จริง
+    import fitz
+
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     try:
         pages = []
-        scale = 200 / 72  # 200 DPI: อ่านอักษรไทยเล็กได้ชัด โดยไม่ส่งภาพใหญ่เกินจำเป็น
+        scale = _ai_render_dpi() / 72
         for page_no in range(min(doc.page_count, _ai_page_count())):
             pix = doc[page_no].get_pixmap(
                 matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
             )
-            pages.append(pix.tobytes("jpeg", jpg_quality=88))
+            try:
+                # JPEG เก็บไว้ส่ง Gemini เท่านั้น แล้วปล่อย bitmap ดิบของ PyMuPDF ทันที
+                pages.append(pix.tobytes("jpeg", jpg_quality=82))
+            finally:
+                pix = None
 
         text = "\n".join(doc[i].get_text("text") for i in range(min(doc.page_count, 2))).strip()
         # กัน text layer ที่ยาว/เพี้ยนจนแย่ง context ของภาพ

@@ -1,7 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-from services.pdf_extractor import extract_text_from_pdf
-from services.claude_parser import parse_insurance_data
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
 from services.supabase_shim import create_client
 from functools import lru_cache

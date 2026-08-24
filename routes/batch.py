@@ -14,8 +14,6 @@ from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
-from services.pdf_extractor import extract_text_from_pdf
-from services.claude_parser import parse_insurance_data
 from services.supabase_shim import create_client
 from services import doc_pairing
 from routes.upload import (
@@ -112,8 +110,21 @@ def _read_one_file(bdir: str, rec: dict) -> dict:
                 time.sleep(15 * (attempt + 1))
                 continue
 
-            # ไม่ทิ้งทั้งกองหาก AI key/บริการมีปัญหา: ใส่ข้อมูล OCR สำหรับ review ไว้ให้
+            # OCR ในเครื่องใช้ Pillow/Numpy/Tesseract มากและทำให้ Render Free (512MB)
+            # ล้มได้ จึงปิดเป็นค่าเริ่มต้น และโหลดโมดูลเฉพาะเมื่อผู้ดูแลเปิดใช้เท่านั้น.
+            enable_ocr = os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() in {"1", "true", "yes"}
+            if not enable_ocr:
+                rec["parsed"] = {}
+                rec["parse_error"] = (
+                    "AI อ่านไม่สำเร็จ — กรุณาลองใหม่ภายหลังหรือกรอกข้อมูลเอง "
+                    "(ระบบไม่เปิด OCR สำรองเพื่อป้องกัน server หน่วยความจำเต็ม)"
+                )
+                return rec
+
+            # ไม่ทิ้งทั้งกองหากผู้ดูแลเปิด OCR สำรองไว้: import แบบ lazy กัน RAM ตอนเริ่มระบบ
             try:
+                from services.pdf_extractor import extract_text_from_pdf
+                from services.claude_parser import parse_insurance_data
                 raw_text = extract_text_from_pdf(blob)
                 rec["parsed"] = parse_insurance_data(raw_text, filename=rec["orig_filename"]) or {}
                 rec["parsed"].update({"raw_text": raw_text[:12000], "parse_engine": "ocr_fallback"})

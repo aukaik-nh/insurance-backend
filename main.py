@@ -158,8 +158,8 @@ async def startup():
 
 app.add_middleware(
     CORSMiddleware,
-    # localhost: รองรับทุก Vite port ที่อาจถูก auto-assign (5173, 5174, 5175, ...)
-    allow_origin_regex=r"http://localhost:\d+",
+    # localhost และ Vercel preview/production ที่อาจเปลี่ยนชื่อ deployment
+    allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app|http://localhost:\d+",
     allow_origins=["http://localhost:3000", "https://insuremgr.vercel.app", "https://safetypc.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
