@@ -215,10 +215,15 @@ def _upload_pdf_to_storage(supabase, file_bytes: bytes, filename: str) -> str | 
 
 @router.post("/preview-pdf")
 async def preview_pdf(file: UploadFile = File(...)):
-    """Extract เลขเบี้ย/วันที่จาก PDF ผ่าน Gemini — ไม่ upload, ไม่ save DB
+    """Extract เลขเบี้ย/วันที่จาก PDF ผ่าน Gemini Vision — ไม่ upload, ไม่ save DB
     ใช้สำหรับ pre-fill ตอนเลือกไฟล์ พ.ร.บ. บนหน้า /upload"""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+    if not gemini_available():
+        raise HTTPException(
+            status_code=503,
+            detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน backend — AI จึงไม่สามารถอ่านเอกสารได้",
+        )
     file_bytes = await file.read()
     loop = asyncio.get_event_loop()
     try:
@@ -226,8 +231,14 @@ async def preview_pdf(file: UploadFile = File(...)):
             _executor, lambda: parse_with_gemini(file_bytes, filename=file.filename) or {}
         )
     except Exception as e:
-        print(f"[preview-pdf] gemini error: {str(e)[:200]}")
-        parsed = {}
+        message = str(e)
+        print(f"[preview-pdf] gemini error: {message[:200]}")
+        if "API_KEY_INVALID" in message or "API key not valid" in message:
+            raise HTTPException(
+                status_code=502,
+                detail="GEMINI_API_KEY ไม่ถูกต้องหรือถูกปิดใช้งาน กรุณาสร้าง API key ใหม่จาก Google AI Studio แล้วตั้งค่า backend ใหม่",
+            )
+        raise HTTPException(status_code=502, detail=f"AI อ่านเอกสารไม่สำเร็จ: {message[:160]}")
     return {
         "success": True,
         "parsed": parsed,
@@ -369,4 +380,4 @@ async def save_policy(data: dict):
         return {"success": True, "id": result.data[0]["id"]}
     except Exception as e:
         print("[save-policy] ERROR:\n", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

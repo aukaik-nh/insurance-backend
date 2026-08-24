@@ -13,6 +13,7 @@ venv/
 # local backups (มีข้อมูลลูกค้า — ห้ามขึ้น git)
 backups/
 *.sql.gz
+zzapp_export.csv
 
 # progress files ของ batch scripts
 batch_progress.json

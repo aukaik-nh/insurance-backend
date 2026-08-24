@@ -14,6 +14,8 @@ from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
+from services.pdf_extractor import extract_text_from_pdf
+from services.claude_parser import parse_insurance_data
 from services.supabase_shim import create_client
 from services import doc_pairing
 from routes.upload import (
@@ -22,10 +24,15 @@ from routes.upload import (
 )
 
 router = APIRouter()
-_executor = ThreadPoolExecutor(max_workers=2)   # คุม concurrency ไม่ให้ชน rate limit ฟรีของ Gemini
+_executor = ThreadPoolExecutor(max_workers=2)
 
 STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
-MAX_FILES = 300
+# 0 = ไม่จำกัดจำนวนไฟล์ต่อกอง; ค่าเริ่มต้น 1 ป้องกันชน quota ขณะอัปหลายไฟล์
+try:
+    MAX_FILES = max(0, int(os.getenv("BATCH_MAX_FILES", "0")))
+    AI_CONCURRENCY = max(1, int(os.getenv("BATCH_AI_CONCURRENCY", "1")))
+except ValueError:
+    MAX_FILES, AI_CONCURRENCY = 0, 1
 
 
 @lru_cache(maxsize=1)
@@ -81,7 +88,7 @@ def _read_progress(batch_id: str) -> dict:
 
 
 def _read_one_file(bdir: str, rec: dict) -> dict:
-    """อ่าน 1 ไฟล์ด้วย Gemini + retry เมื่อชนลิมิต (429) — รันใน thread pool"""
+    """AI Vision อ่านภาพจาก PDF; OCR ในเครื่องเป็น fallback เมื่อ API ใช้ไม่ได้."""
     if rec["same_file_as"]:
         rec["parsed"] = {}
         rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
@@ -91,17 +98,32 @@ def _read_one_file(bdir: str, rec: dict) -> dict:
     for attempt in range(3):
         try:
             rec["parsed"] = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
+            rec["parsed"]["parse_engine"] = "gemini_vision"
             rec.pop("parse_error", None)
             return rec
-        except Exception as e:
-            msg = str(e)
-            is_rate = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
-            if is_rate and attempt < 2:
-                time.sleep(10 * (attempt + 1))   # 10s, 20s แล้วลองใหม่
+        except Exception as error:
+            message = str(error)
+            if "API_KEY_INVALID" in message or "API key not valid" in message:
+                rec["parsed"] = {}
+                rec["parse_error"] = "GEMINI_API_KEY ไม่ถูกต้องหรือถูกปิดใช้งาน — กรุณาแก้ไขค่าตั้งค่า AI ก่อนเริ่มกองใหม่"
+                return rec
+            is_rate_limit = any(token in message.lower() for token in ("429", "resource_exhausted", "quota"))
+            if is_rate_limit and attempt < 2:
+                time.sleep(15 * (attempt + 1))
                 continue
-            rec["parsed"] = {}
-            rec["parse_error"] = ("โควตา Gemini หมด/ชนลิมิต (429) — ลองไฟล์น้อยลง หรืออัปเกรด API key"
-                                  if is_rate else msg[:200])
+
+            # ไม่ทิ้งทั้งกองหาก AI key/บริการมีปัญหา: ใส่ข้อมูล OCR สำหรับ review ไว้ให้
+            try:
+                raw_text = extract_text_from_pdf(blob)
+                rec["parsed"] = parse_insurance_data(raw_text, filename=rec["orig_filename"]) or {}
+                rec["parsed"].update({"raw_text": raw_text[:12000], "parse_engine": "ocr_fallback"})
+                rec["parse_error"] = (
+                    "AI ชนโควตา — ใช้ OCR สำรอง กรุณาตรวจทานก่อนบันทึก"
+                    if is_rate_limit else f"AI อ่านไม่สำเร็จ — ใช้ OCR สำรอง ({message[:80]})"
+                )
+            except Exception as fallback_error:
+                rec["parsed"] = {}
+                rec["parse_error"] = f"อ่านเอกสารไม่สำเร็จ: {str(fallback_error)[:160]}"
             return rec
     return rec
 
@@ -111,24 +133,18 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
     total = len(staged)
     try:
         loop = asyncio.get_event_loop()
-        if not gemini_available():
-            for r in staged:
-                r["parsed"] = {}
-                r["parse_error"] = "ยังไม่ได้ตั้งค่า GEMINI_API_KEY — AI อ่านไฟล์ไม่ได้"
-            _write_progress(batch_id, status="processing", done=total, total=total, current=None)
-        else:
-            done = 0
-            sem = asyncio.Semaphore(2)   # จำกัด concurrency กัน rate limit
+        done = 0
+        sem = asyncio.Semaphore(AI_CONCURRENCY)
 
-            async def _one(r):
-                nonlocal done
-                async with sem:
-                    await loop.run_in_executor(_executor, _read_one_file, bdir, r)
-                done += 1
-                _write_progress(batch_id, status="processing", done=done, total=total,
-                                current=r.get("orig_filename"))
+        async def _one(r):
+            nonlocal done
+            async with sem:
+                await loop.run_in_executor(_executor, _read_one_file, bdir, r)
+            done += 1
+            _write_progress(batch_id, status="processing", done=done, total=total,
+                            current=r.get("orig_filename"))
 
-            await asyncio.gather(*[_one(r) for r in staged])
+        await asyncio.gather(*[_one(r) for r in staged])
 
         records = []
         for r in staged:
@@ -157,7 +173,12 @@ async def batch_extract(files: list[UploadFile] = File(...)):
     ยังไม่บันทึกลงฐานข้อมูล"""
     if not files:
         raise HTTPException(status_code=400, detail="ไม่พบไฟล์")
-    if len(files) > MAX_FILES:
+    if not gemini_available():
+        raise HTTPException(
+            status_code=503,
+            detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน backend — AI จึงไม่สามารถอ่านเอกสารได้",
+        )
+    if MAX_FILES and len(files) > MAX_FILES:
         raise HTTPException(status_code=400,
                             detail=f"อัปได้สูงสุด {MAX_FILES} ไฟล์ต่อครั้ง (ส่งมา {len(files)})")
 
