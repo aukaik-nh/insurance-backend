@@ -162,11 +162,17 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
 
         async def _one(r, chunk_no):
             nonlocal done
+            # แจ้งชื่อไฟล์ทันทีที่เริ่มเรียก AI — Gemini อาจใช้เวลาหลายสิบวินาทีกับ
+            # ไฟล์แรก แต่ผู้ใช้จะเห็นว่างานกำลังดำเนินอยู่ ไม่ใช่ค้างที่ 0/ทั้งหมด
+            _write_progress(batch_id, status="processing", done=done, total=total,
+                            current=r.get("orig_filename"), phase="reading",
+                            chunk=chunk_no, chunk_total=total_chunks,
+                            chunk_size=BATCH_READ_CHUNK_SIZE)
             async with sem:
                 await loop.run_in_executor(_executor, _read_one_file, bdir, r)
             done += 1
             _write_progress(batch_id, status="processing", done=done, total=total,
-                            current=r.get("orig_filename"), chunk=chunk_no,
+                            current=r.get("orig_filename"), phase="completed", chunk=chunk_no,
                             chunk_total=total_chunks, chunk_size=BATCH_READ_CHUNK_SIZE)
 
         for start in range(0, total, BATCH_READ_CHUNK_SIZE):
