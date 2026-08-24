@@ -6,9 +6,15 @@ from functools import lru_cache
 import os, json, traceback, uuid, asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-_executor = ThreadPoolExecutor(max_workers=4)
+# จำกัดหนึ่งงานต่อ instance: Render Free มี RAM เพียง 512MB
+_executor = ThreadPoolExecutor(max_workers=1)
 
 router = APIRouter()
+
+try:
+    MAX_PDF_BYTES = max(1, int(os.getenv("MAX_PDF_BYTES", str(12 * 1024 * 1024))))
+except ValueError:
+    MAX_PDF_BYTES = 12 * 1024 * 1024
 
 # cache client at module level — reuse connection pool (ดู comment ใน routes/policies.py)
 @lru_cache(maxsize=1)
@@ -217,12 +223,16 @@ async def preview_pdf(file: UploadFile = File(...)):
     ใช้สำหรับ pre-fill ตอนเลือกไฟล์ พ.ร.บ. บนหน้า /upload"""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+    if file.size and file.size > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB กรุณาลดขนาดไฟล์ก่อนอ่าน")
     if not gemini_available():
         raise HTTPException(
             status_code=503,
             detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน backend — AI จึงไม่สามารถอ่านเอกสารได้",
         )
     file_bytes = await file.read()
+    if len(file_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB กรุณาลดขนาดไฟล์ก่อนอ่าน")
     loop = asyncio.get_event_loop()
     try:
         parsed = await loop.run_in_executor(

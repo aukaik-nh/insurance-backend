@@ -242,6 +242,11 @@ def _ai_render_dpi() -> int:
         return 144
 
 
+def _vision_mode() -> str:
+    """native_pdf is the free-tier-safe default; Gemini handles PDF server-side."""
+    return os.getenv("AI_VISION_MODE", "native_pdf").strip().lower()
+
+
 def _render_pdf_for_vision(file_bytes: bytes) -> tuple[list[bytes], str]:
     """เรนเดอร์หน้าแรกของ PDF เป็น JPEG ชั่วคราวสำหรับ Gemini Vision.
 
@@ -284,12 +289,14 @@ def parse_with_gemini(file_bytes: bytes, filename: str = "") -> dict:
 
     _log(f"[gemini_parser] '{filename}' -> Gemini Flash Vision (rendered PDF pages)")
 
-    try:
-        image_pages, embedded_text = _render_pdf_for_vision(file_bytes)
-    except Exception as render_error:
-        # PDF บางชนิดเข้ารหัสเก่าหรือเสียหาย: ส่งต้นฉบับให้ Gemini แบบเดิมแทน
-        _log(f"[gemini_parser] render failed, using native PDF fallback: {str(render_error)[:120]}")
-        image_pages, embedded_text = [], ""
+    image_pages, embedded_text = [], ""
+    # Render ภาพใช้ RAM สูงมากบน Render Free (512MB). ค่าเริ่มต้นจึงส่ง PDF
+    # ให้ Gemini อ่านโดยตรง; Google แปลง/อ่านเอกสารบนฝั่งบริการของ Gemini เอง.
+    if _vision_mode() == "rendered":
+        try:
+            image_pages, embedded_text = _render_pdf_for_vision(file_bytes)
+        except Exception as render_error:
+            _log(f"[gemini_parser] render failed, using native PDF: {str(render_error)[:120]}")
     contents = [types.Part.from_text(text=_PROMPT)]
     if embedded_text:
         contents.append(types.Part.from_text(text=(
@@ -298,7 +305,7 @@ def parse_with_gemini(file_bytes: bytes, filename: str = "") -> dict:
     for image in image_pages:
         contents.append(types.Part.from_bytes(data=image, mime_type="image/jpeg"))
 
-    # Fallback เฉพาะ PDF ที่ PyMuPDF เปิด/เรนเดอร์ไม่ได้ เพื่อยังรองรับเอกสารเก่า
+    # Native PDF is also the default free-tier path; no bitmap is held in Render RAM.
     if not image_pages:
         contents.append(types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"))
 

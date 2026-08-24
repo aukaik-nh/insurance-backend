@@ -5,14 +5,8 @@ uvicorn[standard]
 python-multipart
 supabase
 google-genai
-anthropic
-pymupdf
 python-dotenv
 pydantic
-Pillow
-numpy
-pdfminer.six
-pytesseract
 psycopg2-binary
 boto3
 google-api-python-client

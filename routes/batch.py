@@ -22,7 +22,7 @@ from routes.upload import (
 )
 
 router = APIRouter()
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(max_workers=1)
 
 STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
 # 0 = ไม่จำกัดจำนวนไฟล์ต่อกอง; ค่าเริ่มต้น 1 ป้องกันชน quota ขณะอัปหลายไฟล์
@@ -31,6 +31,12 @@ try:
     AI_CONCURRENCY = max(1, int(os.getenv("BATCH_AI_CONCURRENCY", "1")))
 except ValueError:
     MAX_FILES, AI_CONCURRENCY = 0, 1
+
+try:
+    MAX_PDF_BYTES = max(1, int(os.getenv("MAX_PDF_BYTES", str(12 * 1024 * 1024))))
+    MAX_BATCH_BYTES = max(1, int(os.getenv("BATCH_MAX_TOTAL_BYTES", str(100 * 1024 * 1024))))
+except ValueError:
+    MAX_PDF_BYTES, MAX_BATCH_BYTES = 12 * 1024 * 1024, 100 * 1024 * 1024
 
 
 @lru_cache(maxsize=1)
@@ -192,6 +198,11 @@ async def batch_extract(files: list[UploadFile] = File(...)):
     if MAX_FILES and len(files) > MAX_FILES:
         raise HTTPException(status_code=400,
                             detail=f"อัปได้สูงสุด {MAX_FILES} ไฟล์ต่อครั้ง (ส่งมา {len(files)})")
+    known_sizes = [f.size for f in files if f.size is not None]
+    if any(size > MAX_PDF_BYTES for size in known_sizes):
+        raise HTTPException(status_code=413, detail="มีไฟล์ PDF ใหญ่เกินกำหนด 12 MB กรุณาลดขนาดไฟล์ก่อนอัปโหลด")
+    if known_sizes and sum(known_sizes) > MAX_BATCH_BYTES:
+        raise HTTPException(status_code=413, detail="ขนาดรวมของกองไฟล์เกิน 100 MB กรุณาแบ่งอัปโหลดเป็นหลายกอง")
 
     batch_id = uuid.uuid4().hex[:12]
     bdir = _batch_dir(batch_id)
@@ -203,6 +214,8 @@ async def batch_extract(files: list[UploadFile] = File(...)):
         if not (f.filename or "").lower().endswith(".pdf"):
             continue
         data = await f.read()
+        if len(data) > MAX_PDF_BYTES:
+            raise HTTPException(status_code=413, detail=f"ไฟล์ {f.filename} ใหญ่เกินกำหนด 12 MB")
         sha = hashlib.sha256(data).hexdigest()
         file_id = f"{i:04d}"
         with open(os.path.join(bdir, f"{file_id}.pdf"), "wb") as fh:
