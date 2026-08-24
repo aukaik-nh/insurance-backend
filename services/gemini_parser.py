@@ -99,13 +99,19 @@ JSON keys (ตอบเป็น JSON เท่านั้น)
   "doc_type":                  "motor_main | motor_prb | endorsement | credit_note | fire | sme_property | unknown",
   "policy_number":             "เลขกรมธรรม์ — คัดทั้งหมดตามเอกสาร รวม / และ -",
   "company_code":              "รหัสบริษัทประกัน 4-6 ตัว เช่น TMSTH, SAFETY, MSIG, AXA, VIR, BUI",
+  "app_number":                "เลขใบคำขอ / application number ถ้ามี",
+  "policy_type":               "รหัส/ประเภทกรมธรรม์ตามที่พิมพ์ในเอกสาร เช่น M, P, FIRE; อ่านไม่พบให้ null",
+  "new_renew":                 "ใหม่/ต่ออายุ ตามที่พิมพ์ (เช่น ใหม่, ต่ออายุ, N, R)",
   "insured_name":              "ชื่อ-นามสกุลผู้เอาประกัน รวมคำนำหน้า",
   "insured_address":           "ที่อยู่เต็ม รวมเลขบ้าน หมู่ ซอย ถนน แขวง เขต จังหวัด",
+  "phone":                     "เบอร์โทรศัพท์ผู้เอาประกัน ถ้ามี",
   "license_plate":             "ทะเบียนรถ เช่น 1กก 8803 กท / ฒค 5219 กท / 1ฒว 4535 กท",
+  "license_province":          "จังหวัดทะเบียนรถ เช่น กรุงเทพมหานคร, ชลบุรี",
   "chassis_no":                "เลขตัวถัง ตัวอักษรอังกฤษ+ตัวเลข เช่น MRHGM2620CP408631",
   "car_make":                  "ยี่ห้อรถ ตัวอักษรอังกฤษ เช่น TOYOTA, HONDA, ISUZU",
   "car_model":                 "รุ่นรถ ตัวอักษรอังกฤษ เช่น CITY, FORTUNER, MU-7",
   "car_year":                  2013,
+  "sum_insured":               500000,
   "coverage_start":            "YYYY-MM-DD ค.ศ.",
   "coverage_end":              "YYYY-MM-DD ค.ศ.",
   "net_premium":               600.00,
@@ -116,7 +122,8 @@ JSON keys (ตอบเป็น JSON เท่านั้น)
   "third_party_per_accident":  null,
   "own_damage":                null,
   "broker_name":               "ชื่อตัวแทน/นายหน้า",
-  "broker_license":            "เลขใบอนุญาตนายหน้า"
+  "broker_license":            "เลขใบอนุญาตนายหน้า",
+  "agent_code":                "รหัสตัวแทน/นายหน้า ถ้ามี"
 }
 
 ═══════════════════════════════════════════════════════════════
@@ -327,13 +334,19 @@ def parse_with_gemini(file_bytes: bytes, filename: str = "") -> dict:
         "doc_type":                 _doc_type(data.get("doc_type")),
         "policy_number":            _validate_policy_number(data.get("policy_number")),
         "company_code":             data.get("company_code") or None,
+        "app_number":               data.get("app_number") or None,
+        "policy_type":              data.get("policy_type") or None,
+        "new_renew":                data.get("new_renew") or None,
         "insured_name":             data.get("insured_name") or None,
         "insured_address":          data.get("insured_address") or None,
+        "phone":                     data.get("phone") or None,
         "license_plate":            data.get("license_plate") or None,
+        "license_province":         data.get("license_province") or None,
         "chassis_no":               data.get("chassis_no") or None,
         "car_make":                 data.get("car_make") or None,
         "car_model":                data.get("car_model") or None,
         "car_year":                 _yr(data.get("car_year")),
+        "sum_insured":              _fl(data.get("sum_insured")),
         "coverage_start":           _dt(data.get("coverage_start")),
         "coverage_end":             _dt(data.get("coverage_end")),
         "net_premium":              _fl(data.get("net_premium")),
@@ -345,6 +358,7 @@ def parse_with_gemini(file_bytes: bytes, filename: str = "") -> dict:
         "own_damage":               _fl(data.get("own_damage")),
         "broker_name":              data.get("broker_name") or None,
         "broker_license":           data.get("broker_license") or None,
+        "agent_code":               data.get("agent_code") or None,
     }
 
     for k, v in result.items():
