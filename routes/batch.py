@@ -30,8 +30,9 @@ STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
 try:
     MAX_FILES = max(0, int(os.getenv("BATCH_MAX_FILES", "0")))
     AI_CONCURRENCY = max(1, int(os.getenv("BATCH_AI_CONCURRENCY", "1")))
+    BATCH_READ_CHUNK_SIZE = max(1, int(os.getenv("BATCH_READ_CHUNK_SIZE", "10")))
 except ValueError:
-    MAX_FILES, AI_CONCURRENCY = 0, 1
+    MAX_FILES, AI_CONCURRENCY, BATCH_READ_CHUNK_SIZE = 0, 1, 10
 
 try:
     MAX_PDF_BYTES = max(1, int(os.getenv("MAX_PDF_BYTES", str(12 * 1024 * 1024))))
@@ -147,22 +148,31 @@ def _read_one_file(bdir: str, rec: dict) -> dict:
 
 
 async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
-    """อ่านทุกไฟล์เบื้องหลัง + อัปเดต progress ทีละไฟล์ → จับคู่ → เขียน manifest"""
+    """อ่านทุกไฟล์เป็นรอบเล็ก ๆ → จับคู่ทั้งกองหลังอ่านครบ → เขียน manifest.
+
+    การแบ่งรอบมีไว้ควบคุม RAM/โควตาบน Render Free เท่านั้น ไม่ได้จับคู่ทีละรอบ
+    จึงยังจับคู่เอกสารที่ผู้ใช้อัปคนละรอบ (เช่น 10 + 10 + 10) ได้ครบถ้วน.
+    """
     total = len(staged)
     try:
         loop = asyncio.get_event_loop()
         done = 0
         sem = asyncio.Semaphore(AI_CONCURRENCY)
+        total_chunks = max(1, (total + BATCH_READ_CHUNK_SIZE - 1) // BATCH_READ_CHUNK_SIZE)
 
-        async def _one(r):
+        async def _one(r, chunk_no):
             nonlocal done
             async with sem:
                 await loop.run_in_executor(_executor, _read_one_file, bdir, r)
             done += 1
             _write_progress(batch_id, status="processing", done=done, total=total,
-                            current=r.get("orig_filename"))
+                            current=r.get("orig_filename"), chunk=chunk_no,
+                            chunk_total=total_chunks, chunk_size=BATCH_READ_CHUNK_SIZE)
 
-        await asyncio.gather(*[_one(r) for r in staged])
+        for start in range(0, total, BATCH_READ_CHUNK_SIZE):
+            chunk_no = start // BATCH_READ_CHUNK_SIZE + 1
+            chunk = staged[start:start + BATCH_READ_CHUNK_SIZE]
+            await asyncio.gather(*[_one(r, chunk_no) for r in chunk])
 
         records = []
         for r in staged:
@@ -178,7 +188,8 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
         result["duplicates"] = dups
         result["summary"]["duplicates"] = len(dups)
         _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": result})
-        _write_progress(batch_id, status="done", done=total, total=total, current=None)
+        _write_progress(batch_id, status="done", done=total, total=total, current=None,
+                        chunk=total_chunks, chunk_total=total_chunks, chunk_size=BATCH_READ_CHUNK_SIZE)
     except Exception as e:
         print("[batch-process] ERROR:\n", traceback.format_exc())
         _write_progress(batch_id, status="error", done=0, total=total, current=None, error=str(e)[:200])
@@ -237,7 +248,9 @@ async def batch_extract(files: list[UploadFile] = File(...)):
 
     # ── เริ่มอ่านเบื้องหลัง แล้วให้ client poll /progress ดูความคืบหน้าทีละไฟล์ ──
     _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": None})
-    _write_progress(batch_id, status="processing", done=0, total=len(staged), current=None)
+    _write_progress(batch_id, status="processing", done=0, total=len(staged), current=None,
+                    chunk=0, chunk_total=max(1, (len(staged) + BATCH_READ_CHUNK_SIZE - 1) // BATCH_READ_CHUNK_SIZE),
+                    chunk_size=BATCH_READ_CHUNK_SIZE)
     asyncio.create_task(_process_batch(batch_id, bdir, staged))
 
     return {"success": True, "batch_id": batch_id, "total": len(staged), "status": "processing"}
