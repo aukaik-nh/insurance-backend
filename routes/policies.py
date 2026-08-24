@@ -98,11 +98,12 @@ async def get_policies(
         if search:
             s = search.strip()
             like = f"%{s}%"
-            # ทะเบียนรถ: normalize เว้นวรรคทั้งฝั่ง DB และคำค้น — "ถต 9706" / "ถต9706" ให้เจอเหมือนกัน
-            plate_norm = "%" + re.sub(r"\s+", "", s) + "%"
+            # ทะเบียนรถ: normalize เว้นวรรค/ขีดทั้งฝั่ง DB และคำค้น
+            # "ถต 9706", "ถต9706" และ "ถต-9706" ให้เจอเหมือนกัน
+            plate_norm = "%" + re.sub(r"[\s-]+", "", s) + "%"
             # ค้นทะเบียนรถ + ชื่อคน เป็นหลักก่อน แล้วค่อยเลขกรมธรรม์
             query = query.raw_filter(
-                "(REPLACE(license_plate, ' ', '') ILIKE %s "
+                "(REPLACE(REPLACE(license_plate, ' ', ''), '-', '') ILIKE %s "
                 "OR insured_name ILIKE %s "
                 "OR policy_number ILIKE %s)",
                 [plate_norm, like, like],
