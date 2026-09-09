@@ -94,6 +94,7 @@ async def upload_attachment(
     total_premium:  str = Form(""),
     coverage_start: str = Form(""),
     coverage_end:   str = Form(""),
+    auto_extract: bool = Form(True),
     file: UploadFile = File(...),
 ):
     """อัปโหลดเอกสารแนบใหม่ (พ.ร.บ. / สลักหลัง / อื่นๆ) + เบี้ยถ้ามี"""
@@ -122,7 +123,7 @@ async def upload_attachment(
     # ── Auto-extract เลขเบี้ย (เฉพาะ พ.ร.บ. ที่ user ไม่ได้กรอกเอง) ──────────────
     auto = {}
     needs_extract = (
-        doc_type == "prb"
+        auto_extract and doc_type == "prb"
         and not net_premium and not total_premium
         and gemini_available()
     )
@@ -147,10 +148,10 @@ async def upload_attachment(
 
     # auto-generate label ถ้าไม่ได้ใส่ — "พ.ร.บ. ปี {YY}"
     final_label = label.strip() if label.strip() else None
-    if not final_label and doc_type == "prb" and final_ce:
+    if not final_label and doc_type == "prb" and (final_cs or final_ce):
         try:
-            year_ce = int(final_ce.split("-", 1)[0]) + 543  # ค.ศ. → พ.ศ.
-            final_label = f"พ.ร.บ. ปี {year_ce}"
+            year_be = int((final_cs or final_ce).split("-", 1)[0]) + 543  # ค.ศ. → พ.ศ.
+            final_label = f"พ.ร.บ. ปี {year_be}"
         except Exception:
             pass
 
@@ -165,6 +166,7 @@ async def upload_attachment(
     display_filename = _make_display_filename(
         plate=parent_plate,
         doc_type=doc_type,
+        coverage_start=final_cs,
         coverage_end=final_ce,
         policy_type=parent_policy_type,
         address=parent_address,

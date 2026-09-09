@@ -15,3 +15,7 @@ google-auth-oauthlib
 reportlab
 qrcode[pil]
 PyJWT
+pymupdf
+Pillow
+pytesseract==0.3.13
+opencv-python-headless==4.10.0.84

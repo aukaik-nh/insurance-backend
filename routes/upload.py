@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from services.gemini_parser import parse_with_gemini, is_available as gemini_available
+from services.local_pdf_parser import parse_pdf_image_locally
 from services.supabase_shim import create_client
 from functools import lru_cache
 import os, json, traceback, uuid, asyncio
@@ -59,7 +60,8 @@ BUCKET_NAME = "policy-pdfs"  # Supabase Storage bucket (primary)
 def _make_display_filename(
     plate: str | None,
     doc_type: str,
-    coverage_end: str | None,
+    coverage_start: str | None = None,
+    coverage_end: str | None = None,
     policy_type: str | None = None,
     address: str | None = None,
     name: str | None = None,
@@ -81,8 +83,11 @@ def _make_display_filename(
     }.get(doc_type, "เอกสาร")
 
     yy = ""
-    if coverage_end:
-        m = _re.search(r'(\d{4})', str(coverage_end))
+    # ระบบเดิมใช้ปี "เริ่มคุ้มครอง" ในชื่อไฟล์ (กธ.69 / พรบ.69)
+    # ไม่ใช่ปีหมดอายุ; เก็บ fallback end ไว้รองรับข้อมูลเก่าที่ไม่มีวันเริ่ม.
+    coverage_year = coverage_start or coverage_end
+    if coverage_year:
+        m = _re.search(r'(\d{4})', str(coverage_year))
         if m:
             y = int(m.group(1))
             if y < 2500:
@@ -215,6 +220,43 @@ def _upload_pdf_to_storage(supabase, file_bytes: bytes, filename: str) -> str | 
     except Exception as e:
         print(f"[upload-storage] WARNING: ไม่สามารถอัปโหลด PDF ได้: {e}")
         return None
+
+
+@router.post("/preview-pdf-local")
+async def preview_pdf_local(file: UploadFile = File(...)):
+    """PDF -> image -> Thai/English Tesseract using only free local Python tools."""
+    filename = file.filename or "document.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+    if file.size and file.size > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB")
+    file_bytes = await file.read(MAX_PDF_BYTES + 1)
+    if len(file_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB")
+
+    loop = asyncio.get_event_loop()
+    parsed = await loop.run_in_executor(
+        _executor, lambda: parse_pdf_image_locally(file_bytes, filename=filename)
+    )
+    preview = parsed.pop("preview", {})
+    if parsed.get("parse_error"):
+        messages = {
+            "ocr_dependency_missing": "ระบบอ่านข้อความยังไม่พร้อมใช้งาน กรุณาให้ผู้ดูแลตรวจการติดตั้ง ระหว่างนี้ดูเอกสารและกรอกเองได้",
+            "ocr_failed": "อ่านข้อความไม่สำเร็จ แต่ยังดูภาพต้นฉบับและกรอกข้อมูลเองได้",
+            "render_failed": "เปิด PDF ไม่สำเร็จ กรุณาตรวจว่าไฟล์เปิดได้และไม่ได้ตั้งรหัสผ่าน",
+        }
+        parsed["parse_error"] = messages.get(parsed.get("parse_error_code"), "ระบบอ่านเอกสารไม่พร้อมใช้งาน กรุณาติดต่อผู้ดูแลหรือกรอกข้อมูลเอง")
+    return {
+        "success": parsed.get("parse_engine") != "local_ocr_failed",
+        "parsed": parsed,
+        "preview": preview,
+        "used_ai": False,
+        "parse_engine": parsed.get("parse_engine"),
+        "parse_confidence": parsed.get("parse_confidence", 0),
+        "requires_review": parsed.get("requires_review", True),
+        "pdf_filename": filename,
+        "pdf_size": len(file_bytes),
+    }
 
 
 @router.post("/preview-pdf")
@@ -373,6 +415,7 @@ async def save_policy(data: dict):
             save_data["pdf_filename"] = _make_display_filename(
                 plate=save_data.get("license_plate"),
                 doc_type="main",
+                coverage_start=save_data.get("coverage_start"),
                 coverage_end=save_data.get("coverage_end"),
                 policy_type=save_data.get("policy_type"),
                 address=save_data.get("insured_address"),

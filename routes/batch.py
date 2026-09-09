@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 
-from services.gemini_parser import parse_with_gemini, is_available as gemini_available
+from services.gemini_parser import parse_with_gemini
 from services.supabase_shim import create_client
 from services import doc_pairing
 from routes.upload import (
@@ -354,6 +354,7 @@ async def batch_commit(batch_id: str, payload: dict):
             if mf:
                 fname = _make_display_filename(
                     plate=main.get("license_plate"), doc_type="main",
+                    coverage_start=main.get("coverage_start"),
                     coverage_end=main.get("coverage_end"),
                     policy_type=main.get("policy_type"),
                     address=main.get("insured_address"), name=main.get("insured_name"))
@@ -378,7 +379,8 @@ async def batch_commit(batch_id: str, payload: dict):
                 if pf:
                     pname = _make_display_filename(
                         plate=(prb.get("license_plate") or main.get("license_plate")),
-                        doc_type="prb", coverage_end=prb.get("coverage_end"))
+                        doc_type="prb", coverage_start=prb.get("coverage_start"),
+                        coverage_end=prb.get("coverage_end"))
                     with open(os.path.join(bdir, f"{os.path.basename(pf)}.pdf"), "rb") as fh:
                         pblob = fh.read()
                     purl = await loop.run_in_executor(

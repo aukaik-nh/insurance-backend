@@ -8,11 +8,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-ocr-eval/
 venv/
 
 # local backups (มีข้อมูลลูกค้า — ห้ามขึ้น git)
 backups/
 *.sql.gz
+zzapp_export.csv
 zzapp_export.csv
 
 # progress files ของ batch scripts
@@ -32,6 +34,7 @@ match_record_nofile.json
 audit_v2_report.json
 preflight_data_report.json
 preflight_pdf_report.json
+preflight_folder_report.json
 # debug/one-shot scripts (kept locally only)
 test_mdb_python.py
 sample_pa_records.py
@@ -49,3 +52,13 @@ Thumbs.db
 test_*.png
 debug_*.py
 *.log
+# Downloaded OCR models and local document diagnostics
+models/tessdata/
+tmp/ocr-layout-probe/
+tmp/tessdata-best/
+output/ocr_accuracy/
+# Downloaded OCR models and local document diagnostics
+models/tessdata/
+tmp/ocr-layout-probe/
+tmp/tessdata-best/
+output/ocr_accuracy/

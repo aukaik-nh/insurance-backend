@@ -1,15 +1,16 @@
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routes import upload, policies, invoice, attachments, notify, batch, auth as auth_routes
-from routes.auth import require_auth
-from services.line_notify import start_scheduler
 from dotenv import load_dotenv
 from pathlib import Path
 import os, psycopg2
 
 # ระบุ path ชัดเจนและให้ค่าใน .env ทับ environment ว่างที่ Windows/uvicorn reloader สืบทอดมา
 load_dotenv(Path(__file__).with_name(".env"), override=True)
+
+from routes import upload, policies, invoice, attachments, notify, batch, auth as auth_routes
+from routes.auth import require_auth
+from services.line_notify import start_scheduler
 
 # ── Auto-migration: สร้างตารางอัตโนมัติถ้ายังไม่มี ───────────────
 _INIT_SQL = """
