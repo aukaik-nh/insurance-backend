@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from pathlib import Path
@@ -166,6 +167,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 # Global handler — ให้ CORS header ติดมาแม้ 500
 @app.exception_handler(Exception)
