@@ -50,7 +50,8 @@ def verify_token(token: str) -> str:
 
 def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)) -> str:
     """FastAPI Dependency — ใช้กับ router ที่ต้องการ auth"""
-    if os.getenv("AUTH_DISABLED", "").lower() == "true":
+    # ปิด login ชั่วคราวสำหรับเว็บจริง; ตั้ง AUTH_DISABLED=false เมื่อต้องการเปิดกลับ
+    if os.getenv("AUTH_DISABLED", "true").lower() != "false":
         return "local-user"
     if not creds:
         raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อน")
