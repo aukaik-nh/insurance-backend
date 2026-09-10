@@ -12,7 +12,7 @@ class BatchSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, '0000.pdf').write_bytes(b'pdf')
             record = dict(file_id='0000', orig_filename='example.pdf', same_file_as=None)
-            with patch.dict('os.environ', {'ENABLE_LOCAL_OCR_FALLBACK':'true'}), patch.object(batch, 'gemini_available', return_value=False), patch('services.local_pdf_parser.parse_pdf_image_locally', return_value={'policy_number':'P12345', 'preview':{'image_data_url':'large'}}):
+            with patch.dict('os.environ', {'ENABLE_LOCAL_OCR_FALLBACK':'false'}), patch.object(batch, 'parse_pdf_image_locally', return_value={'policy_number':'P12345', 'preview':{'image_data_url':'large'}}):
                 result = batch._read_one_file(folder, record)
             self.assertEqual(result['parsed']['policy_number'], 'P12345')
             self.assertNotIn('preview', result['parsed'])
@@ -52,5 +52,14 @@ class BatchSafetyTests(unittest.TestCase):
 
     def test_completed_file_is_not_ocr_processed_again(self):
         record = {'read_complete':True, 'parsed':{'policy_number':'TEST'}}
-        with patch.object(batch, 'parse_with_gemini', side_effect=AssertionError('reprocessed')):
+        with patch.object(batch, 'parse_pdf_image_locally', side_effect=AssertionError('reprocessed')):
             self.assertIs(batch._read_one_file('unused', record), record)
+
+    def test_reader_failure_is_recorded_per_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, '0000.pdf').write_bytes(b'pdf')
+            record = dict(file_id='0000', orig_filename='broken.pdf', same_file_as=None)
+            with patch.object(batch, 'parse_pdf_image_locally', side_effect=RuntimeError('OCR failed')):
+                result = batch._read_one_file(folder, record)
+            self.assertTrue(result['parse_error'])
+            self.assertEqual(result['parsed'], {})

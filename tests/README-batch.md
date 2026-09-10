@@ -6,7 +6,7 @@ Use the PDF management screen: Import -> Review -> History. Select up to 20 PDFs
 
 - Run one application worker against each staging directory. Multi-worker/distributed leasing is not implemented.
 - Set BATCH_STAGING_ROOT to a persistent mounted directory in production. The default .batch-staging directory survives process restarts but not an ephemeral hosting instance replacement.
-- Set ENABLE_LOCAL_OCR_FALLBACK=true on a worker with the pinned Tesseract models installed and sufficient RAM. Without it, batch extraction uses the configured Gemini service.
+- Batch extraction always uses local OCR with the pinned Tesseract models. Install Tesseract and the Python OCR dependencies on the worker. No Gemini key or ENABLE_LOCAL_OCR_FALLBACK setting is required; batch extraction never calls Gemini.
 - BATCH_MAX_FILES defaults to 20. BATCH_MAX_TOTAL_BYTES defaults to 100 MB.
 - Each completed file is checkpointed. Startup resumes manifests without final results, skipping completed reads. Failed extraction remains available for manual review; it is not silently saved.
 
@@ -18,4 +18,4 @@ Each policy and its PRB attachment is inserted within one PostgreSQL transaction
 
 PDF uploads precede the database transaction. R2 and PostgreSQL do not share a transaction; a failed database insertion can leave an unreferenced uploaded object. No production records were created by the automated tests.
 
-Current extraction uses native text / local OCR plus optional Gemini review. Thai names and addresses can still require correction. No 100% accuracy claim is made. Evaluate a pinned cloud OCR provider on representative, manually labelled PDFs before replacing the existing reader.
+Batch extraction uses local OCR of the first page. Multi-page extraction is not yet supported by this local batch reader; inspect all original pages before saving. Thai names and addresses can still require correction. No 100% accuracy claim is made. Evaluate a pinned cloud OCR provider on representative, manually labelled PDFs before replacing the existing reader.

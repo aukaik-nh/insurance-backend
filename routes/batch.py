@@ -1,7 +1,7 @@
 """
 batch.py — อัปโหลดกรมธรรม์แบบกอง (โยนหลายไฟล์ทีเดียว)
 
-Flow:  POST /batch/extract  → อัปไฟล์เข้า staging + AI อ่าน + จัดประเภท + จับคู่
+Flow:  POST /batch/extract  → อัปไฟล์เข้า staging + OCR อ่าน + จัดประเภท + จับคู่
        GET  /batch/{id}     → ดึงผลกลับมาแสดงหน้า review
        POST /batch/{id}/commit → บันทึกเฉพาะรายการที่คนยืนยันแล้วลง DB จริง
 
@@ -15,7 +15,7 @@ from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 from datetime import datetime, timezone
 
-from services.gemini_parser import parse_with_gemini, is_available as gemini_available
+from services.local_pdf_parser import parse_pdf_image_locally
 from services.supabase_shim import create_client
 from services import doc_pairing
 from routes.upload import (
@@ -30,10 +30,10 @@ STAGING_ROOT = os.path.abspath(os.getenv("BATCH_STAGING_ROOT", os.path.join(os.p
 # รับได้สูงสุด 20 ไฟล์ต่อกองเป็นค่าเริ่มต้น; ปรับผ่าน environment ได้
 try:
     MAX_FILES = max(1, int(os.getenv("BATCH_MAX_FILES", "20")))
-    AI_CONCURRENCY = max(1, int(os.getenv("BATCH_AI_CONCURRENCY", "1")))
+    OCR_CONCURRENCY = max(1, int(os.getenv("BATCH_OCR_CONCURRENCY", "1")))
     BATCH_READ_CHUNK_SIZE = max(1, int(os.getenv("BATCH_READ_CHUNK_SIZE", "10")))
 except ValueError:
-    MAX_FILES, AI_CONCURRENCY, BATCH_READ_CHUNK_SIZE = 20, 1, 10
+    MAX_FILES, OCR_CONCURRENCY, BATCH_READ_CHUNK_SIZE = 20, 1, 10
 
 try:
     MAX_PDF_BYTES = max(1, int(os.getenv("MAX_PDF_BYTES", str(12 * 1024 * 1024))))
@@ -107,30 +107,22 @@ def _read_progress(batch_id: str) -> dict:
 
 
 def _read_one_file(bdir: str, rec: dict) -> dict:
-    """AI Vision อ่านภาพจาก PDF; OCR ในเครื่องเป็น fallback เมื่อ API ใช้ไม่ได้."""
+    """อ่าน PDF ด้วย OCR ในเครื่อง ไม่เรียกบริการ AI ภายนอก."""
     if rec.get("read_complete"):
         return rec
     if rec["same_file_as"]:
         rec["parsed"] = {}
         rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
         return rec
-    with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
-        blob = fh.read()
-    local_enabled = os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() in {"1", "true", "yes"}
-    parsed = None
-    if local_enabled:
-        from services.local_pdf_parser import parse_pdf_image_locally
+    try:
+        with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
+            blob = fh.read()
         parsed = parse_pdf_image_locally(blob, filename=rec["orig_filename"])
         parsed.pop("preview", None)
-    if gemini_available():
-        try:
-            ai = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
-            from routes.upload import _merge_verified_result
-            parsed = _merge_verified_result(parsed or {}, ai)
-        except Exception:
-            if parsed is not None:
-                parsed.setdefault("parse_warnings", []).append(
-                    "AI ไม่พร้อม แสดงผล OCR สำรอง กรุณาตรวจต้นฉบับ")
+    except Exception:
+        rec["parsed"] = {}
+        rec["parse_error"] = "อ่าน PDF ไม่สำเร็จ กรุณาตรวจไฟล์และตัวอ่าน OCR ในเครื่อง แล้วลองใหม่"
+        return rec
     if parsed is None or parsed.get("parse_engine") == "local_ocr_failed":
         rec["parsed"] = parsed or {}
         rec["parse_error"] = "อ่านไม่สำเร็จ กรุณาลองใหม่หรือกรอกข้อมูลจากต้นฉบับ"
@@ -151,12 +143,12 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
     try:
         loop = asyncio.get_event_loop()
         done = 0
-        sem = asyncio.Semaphore(AI_CONCURRENCY)
+        sem = asyncio.Semaphore(OCR_CONCURRENCY)
         total_chunks = max(1, (total + BATCH_READ_CHUNK_SIZE - 1) // BATCH_READ_CHUNK_SIZE)
 
         async def _one(r, chunk_no):
             nonlocal done
-            # แจ้งชื่อไฟล์ทันทีที่เริ่มเรียก AI — Gemini อาจใช้เวลาหลายสิบวินาทีกับ
+            # แจ้งชื่อไฟล์ทันทีที่เริ่มอ่าน OCR — ตัวอ่าน อาจใช้เวลาหลายสิบวินาทีกับ
             # ไฟล์แรก แต่ผู้ใช้จะเห็นว่างานกำลังดำเนินอยู่ ไม่ใช่ค้างที่ 0/ทั้งหมด
             _write_progress(batch_id, status="processing", done=done, total=total,
                             current=r.get("orig_filename"), phase="reading",
@@ -218,15 +210,10 @@ async def resume_staged_batches():
 # ── 1) อัป + อ่าน + จับคู่ ──────────────────────────────────────────
 @router.post("/batch/extract")
 async def batch_extract(files: list[UploadFile] = File(...)):
-    """รับไฟล์ทีละหลายสิบ/หลายร้อย → AI อ่านทุกไฟล์ → จัดประเภท → จับคู่ กธ↔พรบ
+    """รับไฟล์ทีละสูงสุด 20 ไฟล์ → OCR อ่านทุกไฟล์ → จัดประเภท → จับคู่ กธ↔พรบ
     ยังไม่บันทึกลงฐานข้อมูล"""
     if not files:
         raise HTTPException(status_code=400, detail="ไม่พบไฟล์")
-    if not gemini_available() and os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() not in {"1", "true", "yes"}:
-        raise HTTPException(
-            status_code=503,
-            detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน backend — AI จึงไม่สามารถอ่านเอกสารได้",
-        )
     if MAX_FILES and len(files) > MAX_FILES:
         raise HTTPException(status_code=400,
                             detail=f"อัปได้สูงสุด {MAX_FILES} ไฟล์ต่อครั้ง (ส่งมา {len(files)})")
@@ -331,7 +318,7 @@ async def batch_get(batch_id: str):
 
 @router.get("/batch/{batch_id}/files/{file_id}/pdf")
 async def batch_preview_pdf(batch_id: str, file_id: str):
-    """ส่ง PDF จาก staging สำหรับตรวจผล AI ก่อน commit.
+    """ส่ง PDF จาก staging สำหรับตรวจผล OCR ก่อน commit.
 
     ไฟล์ยังอยู่เฉพาะ temporary batch directory และ endpoint จะอนุญาตเฉพาะ
     file_id ที่ระบุไว้ใน manifest ของกองนั้น จึงไม่สามารถใช้ path traversal
