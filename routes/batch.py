@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
+from datetime import datetime, timezone
 
 from services.gemini_parser import parse_with_gemini
 from services.supabase_shim import create_client
@@ -26,13 +27,13 @@ router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=1)
 
 STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
-# 0 = ไม่จำกัดจำนวนไฟล์ต่อกอง; ค่าเริ่มต้น 1 ป้องกันชน quota ขณะอัปหลายไฟล์
+# รับได้สูงสุด 20 ไฟล์ต่อกองเป็นค่าเริ่มต้น; ปรับผ่าน environment ได้
 try:
-    MAX_FILES = max(0, int(os.getenv("BATCH_MAX_FILES", "0")))
+    MAX_FILES = max(1, int(os.getenv("BATCH_MAX_FILES", "20")))
     AI_CONCURRENCY = max(1, int(os.getenv("BATCH_AI_CONCURRENCY", "1")))
     BATCH_READ_CHUNK_SIZE = max(1, int(os.getenv("BATCH_READ_CHUNK_SIZE", "10")))
 except ValueError:
-    MAX_FILES, AI_CONCURRENCY, BATCH_READ_CHUNK_SIZE = 0, 1, 10
+    MAX_FILES, AI_CONCURRENCY, BATCH_READ_CHUNK_SIZE = 20, 1, 10
 
 try:
     MAX_PDF_BYTES = max(1, int(os.getenv("MAX_PDF_BYTES", str(12 * 1024 * 1024))))
@@ -65,6 +66,7 @@ def _load_manifest(batch_id: str) -> dict:
 
 
 def _save_manifest(batch_id: str, data: dict) -> None:
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     with open(_manifest_path(batch_id), "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
 
@@ -253,7 +255,9 @@ async def batch_extract(files: list[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF")
 
     # ── เริ่มอ่านเบื้องหลัง แล้วให้ client poll /progress ดูความคืบหน้าทีละไฟล์ ──
-    _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": None})
+    now = datetime.now(timezone.utc).isoformat()
+    _save_manifest(batch_id, {"batch_id": batch_id, "created_at": now,
+                              "files": staged, "result": None})
     _write_progress(batch_id, status="processing", done=0, total=len(staged), current=None,
                     chunk=0, chunk_total=max(1, (len(staged) + BATCH_READ_CHUNK_SIZE - 1) // BATCH_READ_CHUNK_SIZE),
                     chunk_size=BATCH_READ_CHUNK_SIZE)
@@ -263,6 +267,40 @@ async def batch_extract(files: list[UploadFile] = File(...)):
 
 
 # ── 1.5) ถามความคืบหน้าระหว่างอ่าน ─────────────────────────────────
+@router.get("/batch/history")
+async def batch_history():
+    """รายการกองล่าสุดบน instance นี้ โดยไม่ส่งข้อมูล OCR ทั้งหมดกลับไป."""
+    if not os.path.isdir(STAGING_ROOT):
+        return {"success": True, "items": []}
+    items = []
+    for entry in os.scandir(STAGING_ROOT):
+        if not entry.is_dir():
+            continue
+        try:
+            manifest = _load_manifest(entry.name)
+            progress = _read_progress(entry.name)
+            result = manifest.get("result") or {}
+            summary = result.get("summary") or {}
+            committed = result.get("committed")
+            status = "committed" if committed else progress.get("status", "processing")
+            if status == "done":
+                status = "review"
+            items.append({
+                "batch_id": entry.name,
+                "created_at": manifest.get("created_at"),
+                "updated_at": manifest.get("updated_at"),
+                "total": len(manifest.get("files") or []),
+                "status": status,
+                "progress": {"done": progress.get("done", 0), "total": progress.get("total", 0)},
+                "summary": summary,
+                "committed": committed,
+            })
+        except Exception:
+            continue
+    items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return {"success": True, "items": items[:50]}
+
+
 @router.get("/batch/{batch_id}/progress")
 async def batch_progress(batch_id: str):
     return {"success": True, **_read_progress(batch_id)}
@@ -348,6 +386,8 @@ async def batch_commit(batch_id: str, payload: dict):
             failed.append({"reason": "ข้อมูลกรมธรรม์ว่าง", "item": it})
             continue
         main["manually_edited"] = True
+        source = next((f for f in m["files"] if f["file_id"] == it.get("main_file_id")), {})
+        main["original_filename"] = source.get("orig_filename")
         try:
             # อัปไฟล์ กธ ขึ้น storage (ถ้ามี)
             mf = it.get("main_file_id")
@@ -357,7 +397,9 @@ async def batch_commit(batch_id: str, payload: dict):
                     coverage_start=main.get("coverage_start"),
                     coverage_end=main.get("coverage_end"),
                     policy_type=main.get("policy_type"),
-                    address=main.get("insured_address"), name=main.get("insured_name"))
+                    risk_address=main.get("risk_address"), name=main.get("insured_name"))
+                if fname == "รอตรวจข้อมูล.pdf":
+                    raise ValueError("ข้อมูลตั้งชื่อไฟล์ไม่ครบ กรุณาตรวจทะเบียน วันเริ่มคุ้มครอง หรือสถานที่เอาประกัน")
                 with open(os.path.join(bdir, f"{os.path.basename(mf)}.pdf"), "rb") as fh:
                     blob = fh.read()
                 url = await loop.run_in_executor(

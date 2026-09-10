@@ -101,6 +101,44 @@ class PreviewTests(unittest.TestCase):
         self.assertIn("ติดตั้ง", response["parsed"]["parse_error"])
         self.assertIn("image_data_url", response["preview"])
 
+    def test_verified_preview_fills_form_and_keeps_local_evidence(self):
+        local = {
+            "doc_type": "motor_main", "company_code": "TMSTH", "license_plate": None,
+            "insured_name": None, "parse_engine": "python_tesseract_segmented",
+            "requires_review": True, "parse_warnings": [], "raw_text": "local text",
+            "field_evidence": {
+                "license_plate": {"text": "7ฒน100", "manual_value": "7ฒน100", "status": "review"},
+            },
+            "preview": {"image_data_url": "data:image/png;base64,test"},
+        }
+        ai = {
+            "doc_type": "motor_main", "insured_name": "ดร. สิบสกุล พิพมงคล",
+            "license_plate": "วข 2066 กท", "coverage_start": "2026-08-16",
+            "coverage_end": "2027-08-16", "chassis_no": "W0L0TGF75H030979",
+        }
+        with patch.object(upload, "parse_pdf_image_locally", return_value=local), \
+             patch.object(upload, "gemini_available", return_value=True), \
+             patch.object(upload, "parse_with_gemini", return_value=ai):
+            response = asyncio.run(upload.preview_pdf_verified(
+                UploadFile(filename="policy.pdf", file=io.BytesIO(b"pdf"))))
+        self.assertTrue(response["used_ai"])
+        self.assertEqual(response["parsed"]["insured_name"], "ดร. สิบสกุล พิพมงคล")
+        self.assertEqual(response["parsed"]["license_plate"], "วข 2066 กท")
+        self.assertEqual(response["parsed"]["policy_type"], "M")
+        self.assertEqual(response["preview"]["image_data_url"], "data:image/png;base64,test")
+        self.assertIn("license_plate", response["parsed"]["review_fields"])
+
+    def test_verified_preview_falls_back_when_ai_is_unavailable(self):
+        local = {"policy_number": "D0-70-69/023500", "parse_engine": "native_text",
+                 "requires_review": True, "preview": {}}
+        with patch.object(upload, "parse_pdf_image_locally", return_value=local), \
+             patch.object(upload, "gemini_available", return_value=False), \
+             patch.object(upload, "parse_with_gemini", side_effect=AssertionError("AI called")):
+            response = asyncio.run(upload.preview_pdf_verified(
+                UploadFile(filename="policy.pdf", file=io.BytesIO(b"pdf"))))
+        self.assertFalse(response["used_ai"])
+        self.assertEqual(response["parsed"]["policy_number"], "D0-70-69/023500")
+
 
 if __name__ == "__main__":
     unittest.main()

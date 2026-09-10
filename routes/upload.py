@@ -31,7 +31,7 @@ import re as _re
 ALLOWED_COLUMNS = {
     "policy_number", "company_code", "app_number", "policy_type",
     "new_renew", "agent_code",
-    "insured_name", "insured_address", "phone",
+    "insured_name", "insured_address", "risk_address", "original_filename", "phone",
     "license_plate", "license_province", "chassis_no",
     "car_make", "car_model", "car_year", "sum_insured",
     "coverage_start", "coverage_end",
@@ -57,69 +57,7 @@ DATE_FIELDS  = {"coverage_start", "coverage_end",
 BUCKET_NAME = "policy-pdfs"  # Supabase Storage bucket (primary)
 
 
-def _make_display_filename(
-    plate: str | None,
-    doc_type: str,
-    coverage_start: str | None = None,
-    coverage_end: str | None = None,
-    policy_type: str | None = None,
-    address: str | None = None,
-    name: str | None = None,
-) -> str:
-    """ชื่อไฟล์สำหรับ display + download (ภาษาไทย OK)
-       เลือก identifier ตามประเภทกรมธรรม์:
-         - พ.ร.บ. (doc_type=prb)      → '{ทะเบียน} พรบ.{ปี}.pdf'
-         - ประกันรถยนต์ (M/STY)        → '{ทะเบียน} กธ.{ปี}.pdf'
-         - อัคคีภัย/ทรัพย์สิน (FIRE)   → '{ที่อยู่} กธ.{ปี}.pdf'
-         - PA/TA/MISC ฯลฯ              → '{ชื่อ} กธ.{ปี}.pdf'
-       เช่น   '1ฒว4535กท พรบ.69.pdf'
-              '1กก8803 กธ.70.pdf'
-              'นาย กขค กธ.69.pdf'
-    """
-    type_thai = {
-        "prb": "พรบ",
-        "endorsement": "สลักหลัง",
-        "main": "กธ",
-    }.get(doc_type, "เอกสาร")
-
-    yy = ""
-    # ระบบเดิมใช้ปี "เริ่มคุ้มครอง" ในชื่อไฟล์ (กธ.69 / พรบ.69)
-    # ไม่ใช่ปีหมดอายุ; เก็บ fallback end ไว้รองรับข้อมูลเก่าที่ไม่มีวันเริ่ม.
-    coverage_year = coverage_start or coverage_end
-    if coverage_year:
-        m = _re.search(r'(\d{4})', str(coverage_year))
-        if m:
-            y = int(m.group(1))
-            if y < 2500:
-                y += 543
-            yy = str(y)[-2:]
-
-    plate_clean = _re.sub(r'\s+', '', (plate or '').strip())
-    name_clean    = (name or '').strip()
-    # ที่อยู่: ตัดเอาแค่ส่วนต้น (เลขที่ + ชื่อสถานที่) ไม่ให้ชื่อไฟล์ยาวเกิน
-    address_short = (address or '').strip().split('\n', 1)[0][:40].strip()
-
-    pt = (policy_type or "").upper().strip()
-    FIRE_TYPES = {"FIRE", "ASSET", "IAR", "BURGLAR"}
-    NAME_TYPES = {"PA", "TA", "3RD", "PUBLIC", "MISC", "GOLF", "MARINE"}
-
-    # ── เลือก identifier ตามประเภทเอกสาร + ประเภทกรมธรรม์ ──
-    if doc_type == "prb":
-        ident = plate_clean  # พ.ร.บ. → ใช้ทะเบียนเสมอ
-    elif pt in FIRE_TYPES:
-        ident = address_short or plate_clean or name_clean
-    elif pt in NAME_TYPES:
-        ident = name_clean or plate_clean
-    else:
-        # ประกันรถยนต์ (M/STY) หรือไม่ระบุ → ใช้ทะเบียน
-        ident = plate_clean or name_clean or address_short
-
-    if not ident:
-        ident = "ไม่ทราบ"
-
-    if yy:
-        return f"{ident} {type_thai}.{yy}.pdf"
-    return f"{ident} {type_thai}.pdf"
+from services.document_naming import make_display_filename as _make_display_filename
 
 
 def _safe_storage_name(filename: str) -> str:
@@ -135,39 +73,8 @@ def _safe_storage_name(filename: str) -> str:
 _ILLEGAL_FS = _re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 def _baby78_storage_key(filename: str, supabase) -> str:
-    """ตั้ง storage key แบบ Baby78: ใช้ชื่อ Thai ตรงๆ
-    ถ้าชื่อซ้ำ → เติม _0001, _0002 (เหมือน Baby78)
-    คืน key พร้อม prefix 'policies/'"""
-    fname = _ILLEGAL_FS.sub('', filename).strip()
-    if not fname: fname = "unknown.pdf"
-    if not fname.lower().endswith(".pdf"):
-        fname += ".pdf"
-
-    bucket = os.getenv("R2_BUCKET", "insurance-pdfs")
-    # ตรวจ duplicate ด้วย R2 head_object
-    try:
-        import boto3
-        from botocore.client import Config
-        s3 = boto3.client("s3",
-            endpoint_url=os.getenv("R2_ENDPOINT"),
-            aws_access_key_id=os.getenv("R2_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("R2_SECRET_KEY"),
-            config=Config(signature_version="s3v4"))
-        base_key = f"policies/{fname}"
-        key = base_key
-        n = 0
-        while n < 100:
-            try:
-                s3.head_object(Bucket=bucket, Key=key)
-                # exists → next suffix
-                n += 1
-                stem, ext = fname.rsplit(".", 1)
-                key = f"policies/{stem}_{n:04d}.{ext}"
-            except Exception:
-                return key
-        return base_key  # fallback after 100 collisions
-    except Exception:
-        return f"policies/{fname}"
+    """Use an immutable ID; display names never determine storage identity."""
+    return f"policies/{uuid.uuid4().hex}.pdf"
 
 
 def _clean_thai_number(val: str) -> str:
@@ -204,8 +111,7 @@ def _normalize_date(val: str) -> str | None:
 
 
 def _upload_pdf_to_storage(supabase, file_bytes: bytes, filename: str) -> str | None:
-    """อัปโหลด PDF → R2 ด้วย Baby78 naming convention (ชื่อ Thai ตรงๆ)
-    Storage key: policies/{thai_filename}.pdf (เติม _0001 ถ้าซ้ำ)"""
+    """Upload using an immutable object ID, independent of the display name."""
     try:
         storage_path = _baby78_storage_key(filename, supabase)
         supabase.storage.from_(BUCKET_NAME).upload(
@@ -251,6 +157,121 @@ async def preview_pdf_local(file: UploadFile = File(...)):
         "parsed": parsed,
         "preview": preview,
         "used_ai": False,
+        "parse_engine": parsed.get("parse_engine"),
+        "parse_confidence": parsed.get("parse_confidence", 0),
+        "requires_review": parsed.get("requires_review", True),
+        "pdf_filename": filename,
+        "pdf_size": len(file_bytes),
+    }
+
+
+_VERIFIED_FIELDS = (
+    "doc_type", "policy_number", "company_code", "app_number", "policy_type", "new_renew",
+    "insured_name", "insured_address", "phone", "license_plate", "license_province",
+    "chassis_no", "car_make", "car_model", "car_year", "sum_insured",
+    "coverage_start", "coverage_end", "net_premium", "stamp_duty", "vat",
+    "total_premium", "third_party_per_person", "third_party_per_accident", "own_damage",
+    "broker_name", "broker_license", "agent_code",
+)
+
+
+def _comparison_value(value) -> str:
+    """Normalize only for comparison; never alter the value shown to the user."""
+    return _re.sub(r"[^0-9A-Za-zก-๙]", "", str(value or "")).casefold()
+
+
+def _merge_verified_result(local: dict, ai: dict) -> dict:
+    """Use structured vision values, retaining local OCR evidence and disagreements."""
+    merged = dict(local)
+    warnings = list(local.get("parse_warnings") or [])
+    evidence = {key: dict(value) for key, value in (local.get("field_evidence") or {}).items()}
+
+    for field in _VERIFIED_FIELDS:
+        ai_value = ai.get(field)
+        local_value = local.get(field)
+        local_item = evidence.get(field, {})
+        local_read = local_item.get("manual_value") or local_item.get("text") or local_value
+        if ai_value not in (None, ""):
+            merged[field] = ai_value
+            if local_read not in (None, "") and _comparison_value(local_read) != _comparison_value(ai_value):
+                warnings.append(f"{field}: ผลอ่านสองระบบไม่ตรงกัน กรุณาตรวจช่องนี้กับ PDF")
+            evidence[field] = {
+                **local_item,
+                "status": "review" if local_read not in (None, "") and _comparison_value(local_read) != _comparison_value(ai_value) else "candidate",
+                "value": ai_value,
+                "manual_value": ai_value,
+                "text": str(ai_value),
+                "label": local_item.get("label") or field,
+                "source": "document_vision",
+            }
+        elif local_value not in (None, ""):
+            merged[field] = local_value
+
+    if not merged.get("policy_type"):
+        if merged.get("doc_type") == "motor_main":
+            merged["policy_type"] = "M"
+        elif merged.get("doc_type") == "motor_prb":
+            merged["policy_type"] = "P"
+
+    money = [merged.get(field) for field in ("net_premium", "stamp_duty", "vat", "total_premium")]
+    if all(value is not None for value in money):
+        net, stamp, vat, total = money
+        if abs(round(float(net) + float(stamp) + float(vat), 2) - round(float(total), 2)) > 1:
+            warnings.append("ยอดเงินไม่ผ่านสมการ เบี้ยสุทธิ + อากร + VAT กรุณาตรวจจาก PDF")
+
+    merged.update({
+        "parse_engine": "document_vision_verified",
+        "used_ai": True,
+        "requires_review": True,
+        "parse_warnings": list(dict.fromkeys(warnings)),
+        "field_evidence": evidence,
+        "review_fields": [key for key, item in evidence.items() if item.get("status") == "review"],
+        "raw_text": local.get("raw_text") or "",
+        "text_scope": local.get("text_scope") or "page",
+    })
+    return merged
+
+
+@router.post("/preview-pdf-verified")
+async def preview_pdf_verified(file: UploadFile = File(...)):
+    """Read once locally for evidence, then use document vision to complete the form."""
+    filename = file.filename or "document.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+    if file.size and file.size > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB")
+    file_bytes = await file.read(MAX_PDF_BYTES + 1)
+    if len(file_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="ไฟล์ PDF ใหญ่เกินกำหนด 12 MB")
+
+    loop = asyncio.get_event_loop()
+    local = await loop.run_in_executor(
+        _executor, lambda: parse_pdf_image_locally(file_bytes, filename=filename)
+    )
+    preview = local.pop("preview", {})
+    parsed = local
+    used_ai = False
+    ai_error = None
+    if gemini_available():
+        try:
+            ai = await loop.run_in_executor(
+                _executor, lambda: parse_with_gemini(file_bytes, filename=filename) or {}
+            )
+            parsed = _merge_verified_result(local, ai)
+            used_ai = True
+        except Exception as exc:
+            ai_error = str(exc)[:160]
+            parsed["parse_warnings"] = list(dict.fromkeys(
+                (parsed.get("parse_warnings") or [])
+                + ["ตัวอ่านเอกสารหลักไม่พร้อม จึงแสดงผล OCR สำรอง กรุณาตรวจทุกช่อง"]
+            ))
+
+    return {
+        "success": parsed.get("parse_engine") != "local_ocr_failed",
+        "parsed": parsed,
+        "preview": preview,
+        "used_ai": used_ai,
+        "ai_error": ai_error,
         "parse_engine": parsed.get("parse_engine"),
         "parse_confidence": parsed.get("parse_confidence", 0),
         "requires_review": parsed.get("requires_review", True),
@@ -418,9 +439,12 @@ async def save_policy(data: dict):
                 coverage_start=save_data.get("coverage_start"),
                 coverage_end=save_data.get("coverage_end"),
                 policy_type=save_data.get("policy_type"),
-                address=save_data.get("insured_address"),
+                risk_address=data.get("risk_address"),
                 name=save_data.get("insured_name"),
             )
+
+    if save_data.get("pdf_filename") == "รอตรวจข้อมูล.pdf":
+        raise HTTPException(status_code=422, detail="ข้อมูลตั้งชื่อไฟล์ไม่ครบ กรุณาตรวจข้อมูลก่อนบันทึก")
 
     print("[save-policy] saving:", save_data)
     if skipped:
