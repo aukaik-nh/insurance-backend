@@ -26,6 +26,16 @@ LIST_COLUMNS = (
     "pdf_url, pdf_filename, pdf_size"
 )
 
+# The dashboard and policy table load every row so they can group renewals by
+# customer in the browser.  Keep that response small: none of the address,
+# premium-breakdown or agent fields below are rendered by those screens.
+LIST_SUMMARY_COLUMNS = (
+    "id, created_at, policy_number, policy_type, new_renew, "
+    "insured_name, phone, license_plate, chassis_no, "
+    "coverage_start, coverage_end, total_premium, "
+    "pdf_url, pdf_filename, pdf_size"
+)
+
 # คอลัมน์ที่ detail endpoint จะดึง (ไม่รวม pdf_data เช่นกัน — โหลดแยกผ่าน /pdf)
 DETAIL_COLUMNS = LIST_COLUMNS
 
@@ -71,7 +81,7 @@ SORTABLE = {
 
 
 @router.get("/policies")
-async def get_policies(
+def get_policies(
     page: int = 1,
     limit: int = 20,
     search: str = Query(None),
@@ -81,6 +91,7 @@ async def get_policies(
     date_from: str = Query(None),   # YYYY-MM-DD — coverage_end >=
     date_to: str = Query(None),     # YYYY-MM-DD — coverage_end <=
     has_pdf: str = Query(None),     # "true" | "false"
+    summary: bool = Query(False),   # compact payload for tables/dashboard
 ):
     from datetime import date, timedelta
     supabase = get_supabase()
@@ -93,7 +104,8 @@ async def get_policies(
     in30days  = (date.today() + timedelta(days=30)).isoformat()
 
     try:
-        query = supabase.table("insurance_policies").select(LIST_COLUMNS, count="exact")
+        columns = LIST_SUMMARY_COLUMNS if summary else LIST_COLUMNS
+        query = supabase.table("insurance_policies").select(columns, count="exact")
 
         if search:
             s = search.strip()
