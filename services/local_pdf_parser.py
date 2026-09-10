@@ -44,6 +44,10 @@ _EMPTY_FIELDS = (
     "vat", "total_premium", "third_party_per_person", "third_party_per_accident",
     "own_damage", "broker_name", "broker_license", "agent_code",
 )
+_REVIEW_AUTOFILL_FIELDS = {
+    "policy_number", "insured_name", "insured_address", "license_plate", "license_province",
+    "chassis_no", "car_make", "car_model", "car_year", "coverage_start", "coverage_end",
+}
 
 
 def _blank() -> dict[str, Any]:
@@ -189,6 +193,15 @@ def _classify(text: str) -> str:
 
 
 def _policy_number(text: str) -> str | None:
+    def valid(value: str | None) -> bool:
+        compact = re.sub(r"\s", "", str(value or ""))
+        upper = compact.upper()
+        return (
+            8 <= len(compact) <= 30
+            and sum(char.isdigit() for char in compact) >= 5
+            and not any(word in upper for word in ("EXPIRY", "DATE", "POLICYNO", "NUMBER"))
+        )
+
     candidates: list[str] = []
     for pattern in (
         r"\bD[O0]-\d{2}-\d{2}/\d{4,8}\b",
@@ -202,25 +215,28 @@ def _policy_number(text: str) -> str | None:
             if not value:
                 continue
             value = value.rstrip(". ,")
+            if re.fullmatch(r"D[O0]-\d{2}-\d{2}/\d{4,8}", value, flags=re.IGNORECASE):
+                value = "D0" + value[2:]
             compact = re.sub(r"\s", "", value)
             if compact.isdigit() and len(compact) >= 14:
                 continue
-            if 8 <= len(value) <= 30:
+            if valid(value):
                 candidates.append(value)
     # Scanned schedules frequently turn the leading ``D0`` into ``00`` and
     # the slash into ``!`` or ``|``.  Accept that narrow motor-policy shape
     # and restore the canonical prefix/separators; dates cannot match because
     # the prefix is restricted to D/O/0.
     tolerant = re.compile(
-        r"(?<![A-Z0-9])([D0O]{1,2})\s*[-–—:!|]?\s*(\d{2})\s*[-–—:!|]\s*"
-        r"(\d{2})\s*[/\\!|:]?\s*(\d{6,8})(?!\d)", re.IGNORECASE
+        r"(?<![A-Z0-9])([D0OP]{1,2})\s*[-–—:!|]?\s*(\d{2})\s*[-–—:!|]\s*"
+        r"(\d{2})\s*[/\\!|:]?\s*((?:\d[ \t]*){6,8})(?!\d)", re.IGNORECASE
     )
     for match in tolerant.finditer(text.upper()):
-        prefix = match.group(1).replace("O", "0")
+        prefix = match.group(1).replace("O", "0").replace("P", "D")
         if prefix != "D0":
             prefix = "D0"
-        value = f"{prefix}-{match.group(2)}-{match.group(3)}/{match.group(4)}"
-        if value not in candidates:
+        suffix = re.sub(r"\s", "", match.group(4))
+        value = f"{prefix}-{match.group(2)}-{match.group(3)}/{suffix}"
+        if valid(value) and value not in candidates:
             candidates.append(value)
     return candidates[0] if candidates else None
 
@@ -246,8 +262,13 @@ def _plate(text: str) -> tuple[str | None, str | None]:
 
 
 def _vin(text: str) -> str | None:
-    for candidate in re.findall(r"\b[A-Z0-9]{11,18}\b", text.upper()):
+    for candidate in re.findall(r"\b[A-Z0-9]{17}\b", text.upper()):
         if any(char.isalpha() for char in candidate) and any(char.isdigit() for char in candidate):
+            return candidate
+    # OCR frequently inserts one space inside a VIN at a printed cell boundary.
+    for left, right in re.findall(r"\b([A-Z0-9]{6,12})\s+([A-Z0-9]{4,10})\b", text.upper()):
+        candidate = left + right
+        if len(candidate) == 17 and any(char.isalpha() for char in candidate) and any(char.isdigit() for char in candidate):
             return candidate
     return None
 
@@ -268,9 +289,11 @@ def _extract_dates(lines: list[str], text: str) -> tuple[str | None, str | None]
     if len(candidates) < 2:
         date_pattern = r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s*(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s*\d{2,4}"
         for index, line in enumerate(lines):
-            if not any(token in line.lower() for token in ("ระยะเวลาประกัน", "period of insurance")):
+            if not any(token in line.lower() for token in (
+                "ระยะเวลาประกัน", "period of insurance", "renewal period insured"
+            )):
                 continue
-            for nearby in lines[index:index + 12]:
+            for nearby in lines[max(0, index - 4):index + 12]:
                 for token in re.findall(date_pattern, nearby):
                     parsed = _normalise_date(token)
                     if parsed and parsed not in candidates:
@@ -278,6 +301,55 @@ def _extract_dates(lines: list[str], text: str) -> tuple[str | None, str | None]
             if len(candidates) >= 2:
                 break
     return (candidates[0], candidates[1]) if len(candidates) >= 2 else (None, None)
+
+
+def _vehicle_details(text: str) -> tuple[str | None, str | None, str | None]:
+    """Extract conservative vehicle details from noisy full-page OCR."""
+    lines = _lines(text)
+    upper = " ".join(lines).upper()
+    makes = (
+        "TOYOTA", "HONDA", "ISUZU", "MITSUBISHI", "MAZDA", "NISSAN", "FORD",
+        "CHEVROLET", "SUZUKI", "SUBARU", "BMW", "MERCEDES-BENZ", "MG", "BYD",
+        "VOLVO", "LEXUS", "HYUNDAI", "KIA",
+    )
+    make = next((value for value in makes if re.search(rf"\b{re.escape(value)}\b", upper)), None)
+    model = None
+    if make:
+        for line in lines:
+            match = re.search(rf"\b{re.escape(make)}\s+([A-Z0-9][A-Z0-9 .+/-]{{1,24}})", line.upper())
+            if match:
+                model = match.group(1).strip(" .-/") or None
+                break
+    vehicle_year = None
+    for index, line in enumerate(lines):
+        if not re.search(r"\bYEAR\b|ปีรถ|ปีที่ผลิต", line, re.IGNORECASE):
+            continue
+        nearby = lines[max(0, index - 3):index + 4]
+        values = [int(value) for value in re.findall(r"(?<!\d)(19\d{2}|20\d{2}|25\d{2})(?!\d)", " ".join(nearby))]
+        vehicle_year = next((str(value) for value in values if 1950 <= value <= 2100), None)
+        if vehicle_year:
+            break
+    return make, model, vehicle_year
+
+
+def _insured_name_from_filename(filename: str) -> str | None:
+    stem = re.sub(r"\.pdf$", "", str(filename or ""), flags=re.IGNORECASE).strip()
+    stem = re.sub(r"[_]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    if re.match(r"^(?:นาย|นางสาว|นาง|บริษัท|ห้างหุ้นส่วน|บจก\.)\s*\S+", stem) and len(stem) <= 120:
+        return stem
+    return None
+
+
+def _fill_missing_candidates(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    """Fill only empty OCR fields, preserving the first pass when readers disagree."""
+    for field in _EMPTY_FIELDS:
+        if primary.get(field) in (None, "") and secondary.get(field) not in (None, ""):
+            primary[field] = secondary[field]
+    primary["parse_warnings"] = list(dict.fromkeys(
+        (primary.get("parse_warnings") or []) + (secondary.get("parse_warnings") or [])
+    ))
+    return primary
 
 
 def _parse_text(text: str, engine: str) -> dict[str, Any]:
@@ -288,6 +360,7 @@ def _parse_text(text: str, engine: str) -> dict[str, Any]:
     result["chassis_no"] = _vin(text)
     result["license_plate"], result["license_province"] = _plate(text)
     result["coverage_start"], result["coverage_end"] = _extract_dates(lines, text)
+    result["car_make"], result["car_model"], result["car_year"] = _vehicle_details(text)
 
     names = _values_after_label(lines, ("ผู้เอาประกัน", "The Insured", "ชื่อ Name"))
     names = [name for name in names if name.lower() not in {"name", "ชื่อ"} and 4 < len(name) <= 120]
@@ -447,6 +520,7 @@ def parse_pdf_locally(file_bytes: bytes, filename: str = "") -> dict[str, Any]:
 def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, Any]:
     """Render page 1 and fill only independently checked, layout-scoped candidates."""
     artifacts = {}
+    generic_supplement = None
     stage = "setup"
     try:
         import base64
@@ -472,9 +546,7 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                 # templates still get a useful, review-only full-page OCR pass
                 # so the form is not left completely empty.  This is local
                 # Tesseract only; no image or text leaves the backend.
-                if not extracted.get("layout") and (
-                    not extracted.get("raw_text") or "ยังไม่รองรับ" in extracted.get("raw_text", "")
-                ):
+                if not extracted.get("layout"):
                     try:
                         native_fallback = _native_text(file_bytes)
                     except Exception:
@@ -491,6 +563,18 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                         fallback_engine = "python_tesseract_full_page_fallback"
                     if fallback_text:
                         generic = _parse_text(fallback_text, fallback_engine)
+                        # A second page segmentation mode is useful for renewal
+                        # notices: PSM 11 preserves sparse tables while PSM 6
+                        # more reliably keeps policy numbers and vehicle rows.
+                        if fallback_engine == "python_tesseract_full_page_fallback":
+                            second_text = _ordered_full_page_ocr(image, pytesseract, ocr_config)
+                            if second_text and second_text != fallback_text:
+                                generic = _fill_missing_candidates(
+                                    generic, _parse_text(second_text, "python_tesseract_block_fallback")
+                                )
+                        filename_name = _insured_name_from_filename(filename)
+                        if filename_name:
+                            generic["insured_name"] = filename_name
                         generic["layout"] = None
                         generic["requires_review"] = True
                         generic["parse_warnings"] = list(dict.fromkeys(
@@ -513,6 +597,8 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                             value = generic.get(field)
                             if value is None or field in {"doc_type", "company_code"}:
                                 continue
+                            if field not in safe_fields and field not in _REVIEW_AUTOFILL_FIELDS:
+                                continue
                             evidence[field] = {
                                 "status": "candidate" if field in safe_fields else "review",
                                 "value": value if field in safe_fields else None,
@@ -530,11 +616,27 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                             structured.append(f"{item['label']} [{status}]\n{item['text']}")
                         generic["raw_text"] = "\n\n".join(structured)
                         for field in _EMPTY_FIELDS:
-                            if field not in {"doc_type", "company_code"} and field not in safe_fields:
+                            if field in safe_fields:
+                                continue
+                            item = evidence.get(field) or {}
+                            if field in _REVIEW_AUTOFILL_FIELDS and item.get("manual_value") not in (None, ""):
+                                generic[field] = item["manual_value"]
+                            elif field not in {"doc_type", "company_code"}:
                                 generic[field] = None
                         if generic.get("doc_type") == "fire":
                             generic["policy_type"] = "FIRE"
                         return generic
+                else:
+                    # A recognised table reader can still miss a cell when the
+                    # scan is faint. Supplement only its empty fields from an
+                    # independent full-page pass; keep every supplement marked
+                    # for operator review.
+                    fallback_config = re.sub(r"--psm\s+\d+", "--psm 11", ocr_config)
+                    fallback_text = _ordered_full_page_ocr(image, pytesseract, fallback_config)
+                    if fallback_text:
+                        generic_supplement = _parse_text(
+                            fallback_text, "python_tesseract_full_page_supplement"
+                        )
     except Exception as exc:
         error_code = "ocr_dependency_missing" if isinstance(exc, ImportError) else f"{stage}_failed"
         logging.getLogger(__name__).warning("Local preview failed: stage=%s type=%s missing_module=%s",
@@ -554,6 +656,10 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
     for field, item in evidence.items():
         if field in result and item.get("status") == "candidate":
             result[field] = item.get("value")
+        elif field in result and field in _REVIEW_AUTOFILL_FIELDS and item.get("manual_value") not in (None, ""):
+            # Show review-only OCR in the form for operator convenience. The UI
+            # marks these fields yellow and they remain listed in review_fields.
+            result[field] = item.get("manual_value")
     if extracted.get("layout"):
         result["company_code"] = "TMSTH"
         if extracted["layout"] == "tmsth_compulsory_motor_v1":
@@ -565,6 +671,30 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
             result["policy_type"] = "FIRE"
         else:
             result["doc_type"] = "motor_main"
+    if generic_supplement:
+        for field in _REVIEW_AUTOFILL_FIELDS:
+            value = generic_supplement.get(field)
+            if result.get(field) not in (None, "") or value in (None, ""):
+                continue
+            result[field] = value
+            evidence[field] = {
+                "status": "review",
+                "value": None,
+                "manual_value": value,
+                "text": str(value),
+                "alternatives": [str(value)],
+                "label": _FIELD_LABELS.get(field, field),
+                "source": "full_page_supplement",
+            }
+    filename_name = _insured_name_from_filename(filename)
+    if filename_name:
+        result["insured_name"] = filename_name
+        evidence["insured_name"] = {
+            **evidence.get("insured_name", {}),
+            "status": "review", "value": None, "manual_value": filename_name,
+            "text": filename_name, "alternatives": [filename_name],
+            "label": _FIELD_LABELS["insured_name"], "source": "filename",
+        }
     warnings = (["ช่องที่อ่านไม่ชัดหรืออ่านซ้ำไม่ตรงกันถูกเว้นไว้ กรุณาตรวจต้นฉบับก่อนกรอก"]
                 if evidence else ["ยังไม่รองรับรูปแบบตารางนี้ จึงไม่กรอกข้อมูลอัตโนมัติ กรุณากรอกโดยเทียบต้นฉบับ"])
     result.update({

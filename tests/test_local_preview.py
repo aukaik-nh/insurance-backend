@@ -11,7 +11,7 @@ from PIL import Image
 import pymupdf
 
 from routes import upload
-from services.local_pdf_parser import parse_pdf_image_locally
+from services.local_pdf_parser import parse_ocr_text, parse_pdf_image_locally
 
 
 class PreviewTests(unittest.TestCase):
@@ -63,7 +63,34 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(result["coverage_end"], "2027-07-01")
         self.assertTrue(result["requires_review"])
         self.assertIn("policy_number", result["field_evidence"])
-        self.assertIn("--psm 11", ocr_mock.call_args.kwargs["config"])
+        self.assertTrue(any("--psm 11" in call.kwargs["config"] for call in ocr_mock.call_args_list))
+
+    def test_known_layout_supplements_empty_fields_and_prefers_clear_filename_name(self):
+        with pymupdf.open() as doc:
+            doc.new_page()
+            blob = doc.tobytes()
+        layout = {
+            "layout": "tmsth_electric_motor_schedule_v1",
+            "field_evidence": {
+                "license_plate": {
+                    "status": "review", "value": None, "manual_value": "8กก6384", "text": "8กก6384"
+                }
+            },
+            "raw_text": "ทะเบียนรถ [รอตรวจ]\n8กก6384",
+        }
+        ocr = (
+            "0-70-68/08 1970\n30/11/2026 - 30/11/2027\nRenewal Period Insured\n"
+            "HONDA CRV\nMRHRM4830EP 100434\n2014\nYear"
+        )
+        with patch("services.segmented_ocr.read_document", return_value=layout), \
+             patch("pytesseract.image_to_string", return_value=ocr):
+            result = parse_pdf_image_locally(blob, "นางสาว สมใจ แซ่อึ้ง.pdf")
+        self.assertEqual(result["policy_number"], "D0-70-68/081970")
+        self.assertEqual(result["insured_name"], "นางสาว สมใจ แซ่อึ้ง")
+        self.assertEqual(result["license_plate"], "8กก6384")
+        self.assertEqual(result["chassis_no"], "MRHRM4830EP100434")
+        self.assertIn("policy_number", result["review_fields"])
+        self.assertEqual(result["field_evidence"]["insured_name"]["source"], "filename")
 
     def test_corrupt_document_is_reported(self):
         result = parse_pdf_image_locally(b"not a pdf")
@@ -138,6 +165,27 @@ class PreviewTests(unittest.TestCase):
                 UploadFile(filename="policy.pdf", file=io.BytesIO(b"pdf"))))
         self.assertFalse(response["used_ai"])
         self.assertEqual(response["parsed"]["policy_number"], "D0-70-69/023500")
+
+    def test_policy_number_does_not_accept_expiry_heading(self):
+        parsed = parse_ocr_text("Policy No. EXPIRY DATE\n30/11/2569\nPeriod of Insurance")
+        self.assertIsNone(parsed["policy_number"])
+
+    def test_policy_number_normalises_ocr_letter_o(self):
+        parsed = parse_ocr_text("Policy No. DO-70-68/031970")
+        self.assertEqual(parsed["policy_number"], "D0-70-68/031970")
+
+    def test_noisy_renewal_notice_extracts_core_vehicle_fields(self):
+        parsed = parse_ocr_text(
+            "0-70-68/08 1970\n30/11/2026 - 30/11/2027\nRenewal Period Insured\n"
+            "HONDA CR-V\nMRHRM4830EP 100434\nChassis No.\n2014\nYear"
+        )
+        self.assertEqual(parsed["policy_number"], "D0-70-68/081970")
+        self.assertEqual(parsed["coverage_start"], "2026-11-30")
+        self.assertEqual(parsed["coverage_end"], "2027-11-30")
+        self.assertEqual(parsed["chassis_no"], "MRHRM4830EP100434")
+        self.assertEqual(parsed["car_make"], "HONDA")
+        self.assertEqual(parsed["car_model"], "CR-V")
+        self.assertEqual(parsed["car_year"], "2014")
 
 
 if __name__ == "__main__":

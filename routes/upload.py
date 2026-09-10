@@ -232,6 +232,26 @@ def _merge_verified_result(local: dict, ai: dict) -> dict:
     return merged
 
 
+async def _parse_with_ai_retry(loop, file_bytes: bytes, filename: str) -> dict:
+    """Retry transient provider failures without repeating local OCR."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            return await loop.run_in_executor(
+                _executor, lambda: parse_with_gemini(file_bytes, filename=filename) or {}
+            )
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).lower()
+            transient = any(token in message for token in (
+                "503", "unavailable", "high demand", "timeout", "timed out",
+            ))
+            if not transient or attempt == 2:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+    raise last_error
+
+
 @router.post("/preview-pdf-verified")
 async def preview_pdf_verified(file: UploadFile = File(...)):
     """Read once locally for evidence, then use document vision to complete the form."""
@@ -254,9 +274,7 @@ async def preview_pdf_verified(file: UploadFile = File(...)):
     ai_error = None
     if gemini_available():
         try:
-            ai = await loop.run_in_executor(
-                _executor, lambda: parse_with_gemini(file_bytes, filename=filename) or {}
-            )
+            ai = await _parse_with_ai_retry(loop, file_bytes, filename)
             parsed = _merge_verified_result(local, ai)
             used_ai = True
         except Exception as exc:
