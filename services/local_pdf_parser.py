@@ -588,7 +588,15 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
             from services.segmented_ocr import read_document
             ocr_config = _configure_tesseract(pytesseract, "tha+eng")
             with Image.frombytes("L", (pix.width, pix.height), pix.samples) as image:
-                extracted = read_document(image)
+                # The segmented reader launches many crop OCR processes and is
+                # ideal on a dedicated/local worker. Render's shared CPU can
+                # time out every crop, so use two full-page passes there. All
+                # such values stay review-only before commit.
+                full_page_mode = bool(os.getenv("RENDER_GIT_COMMIT")) or os.getenv(
+                    "LOCAL_OCR_MODE", ""
+                ).lower() == "full_page"
+                extracted = ({"layout": None, "field_evidence": {}, "raw_text": ""}
+                             if full_page_mode else read_document(image))
                 # Layout readers are intentionally strict.  Unknown insurer
                 # templates still get a useful, review-only full-page OCR pass
                 # so the form is not left completely empty.  This is local

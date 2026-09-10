@@ -75,6 +75,18 @@ class PreviewTests(unittest.TestCase):
         self.assertIn("policy_number", result["field_evidence"])
         self.assertTrue(any("--psm 11" in call.kwargs["config"] for call in ocr_mock.call_args_list))
 
+    def test_production_worker_uses_bounded_full_page_reader(self):
+        with pymupdf.open() as doc:
+            doc.new_page()
+            blob = doc.tobytes()
+        ocr = "Policy No D0-70-69/022848\nPeriod of Insurance 1 กรกฎาคม 2569 to 1 กรกฎาคม 2570"
+        with patch.dict("os.environ", {"RENDER_GIT_COMMIT": "test"}), \
+             patch("services.segmented_ocr.read_document", side_effect=AssertionError("segmented OCR called")), \
+             patch("pytesseract.image_to_string", return_value=ocr):
+            result = parse_pdf_image_locally(blob)
+        self.assertEqual(result["policy_number"], "D0-70-69/022848")
+        self.assertTrue(result["requires_review"])
+
     def test_known_layout_supplements_empty_fields_and_prefers_clear_filename_name(self):
         with pymupdf.open() as doc:
             doc.new_page()
