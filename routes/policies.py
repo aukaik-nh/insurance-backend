@@ -80,6 +80,34 @@ SORTABLE = {
 }
 
 
+def _group_latest_by_customer(rows: list[dict]) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        name = (row.get("insured_name") or "").strip().lower()
+        key = name or f"__id__{row.get('id')}"
+        groups.setdefault(key, []).append(row)
+
+    grouped = []
+    for policies in groups.values():
+        policies.sort(
+            key=lambda row: str(
+                row.get("coverage_start")
+                or row.get("coverage_end")
+                or row.get("created_at")
+                or ""
+            ),
+            reverse=True,
+        )
+        latest = dict(policies[0])
+        latest["_historyCount"] = sum(
+            1
+            for row in policies[1:]
+            if row.get("pdf_url") or row.get("pdf_filename") or row.get("pdf_size")
+        )
+        grouped.append(latest)
+    return grouped
+
+
 @router.get("/policies")
 def get_policies(
     page: int = 1,
@@ -92,6 +120,8 @@ def get_policies(
     date_to: str = Query(None),     # YYYY-MM-DD — coverage_end <=
     has_pdf: str = Query(None),     # "true" | "false"
     summary: bool = Query(False),   # compact payload for tables/dashboard
+    grouped: bool = Query(False),   # one latest row per insured customer
+    category: str = Query(None),    # motor | prb | fire | pa | other
 ):
     from datetime import date, timedelta
     supabase = get_supabase()
@@ -138,14 +168,39 @@ def get_policies(
         elif has_pdf == "false":
             query = query.is_("pdf_filename", "null")
 
-        result = query.order(sort_col, desc=is_desc)\
-                      .range(offset, offset + limit - 1)\
-                      .execute()
+        if category:
+            category = category.strip().lower()
+            category_types = {
+                "motor": ["M"],
+                "prb": ["P"],
+                "fire": ["FIRE", "ASSET", "IAR", "BURGLAR"],
+                "pa": ["PA", "TA", "3RD", "PUBLIC", "MISC", "GOLF", "MARINE"],
+            }
+            if category in category_types:
+                query = query.in_("policy_type", category_types[category])
+
+        ordered = query.order(sort_col, desc=is_desc)
+        result = ordered.execute() if grouped else ordered.range(offset, offset + limit - 1).execute()
+
+        data = result.data
+        stats = None
+        if grouped:
+            raw_rows = data
+            data = _group_latest_by_customer(raw_rows)
+            stats = {
+                "active": sum(1 for row in raw_rows if str(row.get("coverage_end") or "") > today),
+                "expiring": sum(
+                    1 for row in raw_rows
+                    if today < str(row.get("coverage_end") or "") <= in30days
+                ),
+            }
 
         return {
-            "data": result.data,
+            "data": data,
             "page": page,
-            "total": result.count or 0
+            "total": result.count or 0,
+            "grouped": grouped,
+            "stats": stats,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
