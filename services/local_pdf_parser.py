@@ -458,6 +458,49 @@ def _ordered_full_page_ocr(image: Any, pytesseract: Any, config: str) -> str:
     return pytesseract.image_to_string(image, lang="tha+eng", config=config, timeout=90).strip()
 
 
+def _targeted_policy_number_ocr(image: Any, pytesseract: Any, config: str) -> str | None:
+    """Read the small policy-number header without OCRing every table cell."""
+    from PIL import Image, ImageOps
+    from services.segmented_ocr import table_geometry
+
+    deskewed, rows, columns, _ = table_geometry(image)
+    boxes = []
+    if rows and columns and len(columns[0]) >= 2:
+        left, right = columns[0][0], columns[0][-1]
+        width = right - left
+
+        def band(index: int, x1: float, y1: float, x2: float, y2: float):
+            top, bottom = rows[index:index + 2]
+            return (int(left + width*x1), int(top + (bottom-top)*y1),
+                    int(left + width*x2), int(top + (bottom-top)*y2))
+
+        if len(rows) == 21:
+            boxes.extend((band(0, .13, .34, .34, .58),
+                          band(0, .167, .44, .31, .65),
+                          band(0, .165, .43, .30, .64)))
+        elif len(rows) == 14:
+            boxes.append(band(0, .32, .65, .55, .89))
+    if not boxes:
+        boxes.append((0, 0, round(image.width * .7), round(image.height * .38)))
+
+    targeted_config = re.sub(r"--psm\s+\d+", "--psm 7", config)
+    targeted_config += " -c tessedit_char_whitelist=D0123456789-/"
+    for box in boxes:
+        crop = ImageOps.autocontrast(deskewed.crop(box), cutoff=1)
+        for scale in (2, 3):
+            enlarged = crop.resize(
+                (round(crop.width * scale), round(crop.height * scale)),
+                resample=Image.Resampling.LANCZOS,
+            )
+            text = pytesseract.image_to_string(
+                enlarged, lang="eng", config=targeted_config, timeout=60
+            )
+            value = _policy_number(text)
+            if value:
+                return value
+    return None
+
+
 def _ocr_text(file_bytes: bytes, max_pages_override: int | None = None, artifacts: dict | None = None) -> str:
     import pymupdf as fitz
     import pytesseract
@@ -574,9 +617,15 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
         stage = "render"
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             page = doc[0]
+            full_page_mode = bool(os.getenv("RENDER_GIT_COMMIT")) or os.getenv(
+                "LOCAL_OCR_MODE", ""
+            ).lower() == "full_page"
             # Keep identifier crops sharp. Production workers get a longer OCR
-            # deadline rather than sacrificing policy/VIN accuracy.
-            layout_dpi = max(200, min(int(os.getenv("LOCAL_OCR_LAYOUT_DPI", "300")), 300))
+            # deadline rather than sacrificing policy/VIN accuracy. The
+            # bounded full-page production pass uses fewer pixels so it can
+            # finish before the subprocess timeout on a shared CPU.
+            default_dpi = "220" if full_page_mode else "300"
+            layout_dpi = max(200, min(int(os.getenv("LOCAL_OCR_LAYOUT_DPI", default_dpi)), 300))
             scale = min(layout_dpi / 72, 3600 / max(page.rect.width, page.rect.height))
             pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csGRAY, alpha=False)
             artifacts["image_data_url"] = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode("ascii")
@@ -592,9 +641,6 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                 # ideal on a dedicated/local worker. Render's shared CPU can
                 # time out every crop, so use two full-page passes there. All
                 # such values stay review-only before commit.
-                full_page_mode = bool(os.getenv("RENDER_GIT_COMMIT")) or os.getenv(
-                    "LOCAL_OCR_MODE", ""
-                ).lower() == "full_page"
                 extracted = ({"layout": None, "field_evidence": {}, "raw_text": ""}
                              if full_page_mode else read_document(image))
                 # Layout readers are intentionally strict.  Unknown insurer
@@ -627,6 +673,10 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                                 generic = _fill_missing_candidates(
                                     generic, _parse_text(second_text, "python_tesseract_block_fallback")
                                 )
+                        if not generic.get("policy_number"):
+                            generic["policy_number"] = _targeted_policy_number_ocr(
+                                image, pytesseract, ocr_config
+                            )
                         later_text = _remaining_pages_text(file_bytes)
                         if later_text:
                             generic = _fill_missing_candidates(
