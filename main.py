@@ -196,4 +196,7 @@ def root():
 @app.get("/health")
 @app.head("/health")
 def health():
-    return {"ok": True}
+    # Render provides the deployed commit. Exposing its short revision makes
+    # production verification deterministic without revealing configuration.
+    revision = os.getenv("RENDER_GIT_COMMIT", "local")[:7]
+    return {"ok": True, "revision": revision}
