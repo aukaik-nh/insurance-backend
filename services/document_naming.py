@@ -42,7 +42,10 @@ def make_display_filename(plate, doc_type, coverage_start=None, coverage_end=Non
         year = start_year(coverage_start)
         if not ident or not year:
             return 'รอตรวจข้อมูล.pdf'
-        stem = f"{ident}-{'พรบ.' if prb else 'กธ'}-{year}"
+        if doc_type == 'renewal_notice':
+            stem = f"{ident}-แจ้งเตือนต่ออายุ-{year}"
+        else:
+            stem = f"{ident}-{'พรบ.' if prb else 'กธ'}-{year}"
     if not ident:
         return 'รอตรวจข้อมูล.pdf'
     if doc_type == 'endorsement':

@@ -4,7 +4,7 @@
 create table if not exists policy_attachments (
   id           uuid primary key default gen_random_uuid(),
   policy_id    uuid not null references insurance_policies(id) on delete cascade,
-  doc_type     text not null check (doc_type in ('main','prb','endorsement','other')),
+  doc_type     text not null check (doc_type in ('main','prb','renewal_notice','endorsement','credit_note','invoice','receipt','other')),
   label        text,                       -- ป้ายกำกับเพิ่ม เช่น "พ.ร.บ. ปี 2569", "เปลี่ยนชื่อผู้ขับ"
   pdf_url      text,
   pdf_filename text,

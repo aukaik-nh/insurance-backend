@@ -177,16 +177,31 @@ def _validate_result(result: dict[str, Any]) -> list[str]:
 
 def _classify(text: str) -> str:
     upper = text.upper()
+    if (
+        "หนังสือแจ้งเตือนต่ออายุ" in text
+        or "หนังสือแจ้งต่ออายุ" in text
+        or "RENEWAL NOTICE" in upper
+        or "MOTOR INSURANCE RENEWAL" in upper
+    ):
+        return "renewal_notice"
     if "ผู้ประสบภัยจากรถ" in text or "PROTECTION FOR VICTIMS" in upper:
         return "motor_prb"
     if any(marker in text for marker in ("สลักหลัง", "ยกเลิกกรมธรรม์", "ร.ย.11", "ร.ย. 11")):
         return "endorsement"
     if any(marker in upper for marker in ("CREDIT NOTE", "CREDIT-NOTE")) or "ใบคืนเบี้ย" in text or "ใบลดหนี้" in text:
         return "credit_note"
+    if "ใบแจ้งหนี้" in text or "INVOICE" in upper:
+        return "invoice"
+    if "ใบเสร็จรับเงิน" in text or "RECEIPT" in upper:
+        return "receipt"
     if "อัคคีภัย" in text or "FIRE INSURANCE" in upper:
         return "fire"
     if "SME INSURANCE" in upper or "สรรพธุรกิจ" in text:
         return "sme_property"
+    if any(marker in upper for marker in ("PERSONAL ACCIDENT", "TRAVEL INSURANCE")) or any(
+        marker in text for marker in ("อุบัติเหตุส่วนบุคคล", "ประกันภัยการเดินทาง")
+    ):
+        return "other_policy"
     if "ประกันภัยรถยนต์" in text or "MOTOR INSURANCE" in upper:
         return "motor_main"
     return "unknown"
@@ -797,6 +812,10 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
             result["policy_type"] = "FIRE"
         else:
             result["doc_type"] = "motor_main"
+    # A renewal notice uses the same insurer layout and old policy number as a
+    # motor schedule. The explicit document title must win over that layout.
+    if generic_supplement and generic_supplement.get("doc_type") == "renewal_notice":
+        result["doc_type"] = "renewal_notice"
     if generic_supplement:
         for field in _REVIEW_AUTOFILL_FIELDS:
             value = generic_supplement.get(field)

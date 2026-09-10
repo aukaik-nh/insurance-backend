@@ -39,6 +39,18 @@ class PairingSafetyTests(unittest.TestCase):
         record = {'doc_type': 'motor_main', 'policy_number': 'D0-72-69/004889'}
         self.assertEqual(classify(record), 'motor_prb')
 
+    def test_renewal_title_wins_over_referenced_motor_policy_number(self):
+        record = {
+            'doc_type': 'motor_main',
+            'policy_number': 'D0-70-68/034882',
+            'title': 'หนังสือแจ้งเตือนต่ออายุกรมธรรม์ประกันภัยรถยนต์',
+        }
+        self.assertEqual(classify(record), 'renewal_notice')
+
+    def test_pa_and_travel_are_standalone_policy_documents(self):
+        self.assertEqual(classify({'title': 'PERSONAL ACCIDENT POLICY'}), 'other_policy')
+        self.assertEqual(classify({'title': 'กรมธรรม์ประกันภัยการเดินทาง'}), 'other_policy')
+
     def test_filename_plate_and_year_proposes_review_pair(self):
         main = {'policy_number': 'D0-70-69/1', 'orig_filename': '1กก8803 กธ.69.pdf'}
         prb = {'policy_number': 'D0-72-69/2', 'orig_filename': '1กก8803 พรบ.69.pdf'}

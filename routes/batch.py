@@ -368,6 +368,55 @@ def _clean_for_db(data: dict) -> dict:
     return out
 
 
+SUPPORT_DOCUMENT_TYPES = {
+    doc_pairing.MOTOR_PRB,
+    doc_pairing.RENEWAL_NOTICE,
+    doc_pairing.ENDORSEMENT,
+    doc_pairing.CREDIT_NOTE,
+    doc_pairing.INVOICE,
+    doc_pairing.RECEIPT,
+    doc_pairing.UNKNOWN,
+}
+
+
+def _coverage_year(value):
+    text = str(value or "")
+    return text[:4] if len(text) >= 4 and text[:4].isdigit() else None
+
+
+def _find_parent_policy(supabase, record: dict, document_type: str):
+    """Return one unambiguous parent policy; never choose between ties."""
+    columns = "id, created_at, policy_number, company_code, license_plate, chassis_no, policy_type, coverage_start"
+    if document_type != doc_pairing.MOTOR_PRB and record.get("policy_number"):
+        query = supabase.table("insurance_policies").select(columns).eq(
+            "policy_number", record["policy_number"]
+        )
+        if record.get("company_code"):
+            query = query.eq("company_code", record["company_code"])
+        rows = query.order("created_at", desc=True).range(0, 1).execute().data or []
+        return rows[0] if len(rows) == 1 else None
+
+    if document_type != doc_pairing.MOTOR_PRB:
+        return None
+    query = supabase.table("insurance_policies").select(columns).in_("policy_type", ["M", "STY"])
+    chassis = doc_pairing.norm_chassis(record.get("chassis_no"))
+    plate = doc_pairing.norm_plate(record.get("license_plate"))
+    if chassis:
+        query = query.raw_filter(
+            "REPLACE(REPLACE(UPPER(chassis_no), ' ', ''), '-', '') = %s", [chassis]
+        )
+    elif plate:
+        query = query.raw_filter(
+            "REPLACE(REPLACE(license_plate, ' ', ''), '-', '') = %s", [plate]
+        )
+    else:
+        return None
+    rows = query.order("created_at", desc=True).range(0, 20).execute().data or []
+    year = _coverage_year(record.get("coverage_start"))
+    same_year = [row for row in rows if not year or _coverage_year(row.get("coverage_start")) == year]
+    return same_year[0] if len(same_year) == 1 else None
+
+
 @router.post("/batch/{batch_id}/commit")
 async def batch_commit(batch_id: str, payload: dict):
     """payload = {"items":[{"main":{...}, "prb":{...}|null,
@@ -390,7 +439,19 @@ async def batch_commit(batch_id: str, payload: dict):
             if file_id not in staged_ids or file_id in selected_ids:
                 raise HTTPException(status_code=400, detail="ไฟล์ไม่อยู่ในชุดนี้หรือถูกเลือกซ้ำ")
             selected_ids.add(file_id)
-        main = _clean_for_db(item.get("main") or {})
+        raw_main = item.get("main") or {}
+        main = _clean_for_db(raw_main)
+        document_type = raw_main.get("doc_type") or doc_pairing.UNKNOWN
+        if document_type in SUPPORT_DOCUMENT_TYPES:
+            if "doc_type" not in raw_main:
+                raise HTTPException(status_code=422, detail="กรุณาระบุประเภทเอกสารก่อนบันทึก")
+            if document_type == doc_pairing.RENEWAL_NOTICE and not all(main.get(key) for key in ("policy_number", "coverage_start", "coverage_end")):
+                raise HTTPException(status_code=422, detail="หนังสือแจ้งเตือนต่ออายุต้องมีเลขกรมธรรม์อ้างอิงและช่วงคุ้มครองใหม่")
+            if not item.get("main_file_id"):
+                raise HTTPException(status_code=422, detail="เอกสารประกอบต้องมีไฟล์ PDF")
+            if main.get("coverage_start") and main.get("coverage_end") and main["coverage_start"] >= main["coverage_end"]:
+                raise HTTPException(status_code=422, detail="วันสิ้นสุดต้องอยู่หลังวันเริ่มคุ้มครอง")
+            continue
         if not all(main.get(key) for key in ("policy_number", "insured_name", "coverage_start", "coverage_end")):
             raise HTTPException(status_code=422, detail="ตรวจเลขกรมธรรม์ ชื่อ และวันคุ้มครองให้ครบก่อนบันทึก")
         if main["coverage_start"] >= main["coverage_end"]:
@@ -401,10 +462,11 @@ async def batch_commit(batch_id: str, payload: dict):
 
     supabase = get_supabase()
     loop = asyncio.get_event_loop()
-    created, failed = [], []
+    created, attached, inbox, failed = [], [], [], []
 
     for it in items:
-        main = _clean_for_db(it.get("main") or {})
+        raw_main = it.get("main") or {}
+        main = _clean_for_db(raw_main)
         if not main:
             failed.append({"reason": "ข้อมูลกรมธรรม์ว่าง", "item": it})
             continue
@@ -412,6 +474,77 @@ async def batch_commit(batch_id: str, payload: dict):
         source = next((f for f in m["files"] if f["file_id"] == it.get("main_file_id")), {})
         main["original_filename"] = source.get("orig_filename")
         try:
+            document_type = raw_main.get("doc_type") or doc_pairing.UNKNOWN
+            if document_type in SUPPORT_DOCUMENT_TYPES:
+                parent = _find_parent_policy(supabase, main, document_type)
+                mf = it.get("main_file_id")
+                if document_type in {doc_pairing.MOTOR_PRB, doc_pairing.RENEWAL_NOTICE} and parent:
+                    generated_name = _make_display_filename(
+                        plate=main.get("license_plate") or parent.get("license_plate"),
+                        doc_type="prb" if document_type == doc_pairing.MOTOR_PRB else "renewal_notice",
+                        coverage_start=main.get("coverage_start"),
+                        coverage_end=main.get("coverage_end"),
+                        policy_type=parent.get("policy_type"),
+                    )
+                    fname = generated_name if generated_name != "รอตรวจข้อมูล.pdf" else (source.get("orig_filename") or generated_name)
+                else:
+                    fname = source.get("orig_filename") or f"{document_type}.pdf"
+                with open(os.path.join(bdir, f"{os.path.basename(mf)}.pdf"), "rb") as fh:
+                    blob = fh.read()
+                url = await loop.run_in_executor(
+                    _executor, lambda: _upload_pdf_to_storage(supabase, blob, fname))
+                attachment_type = "prb" if document_type == doc_pairing.MOTOR_PRB else document_type
+                labels = {
+                    "prb": "พ.ร.บ.",
+                    "renewal_notice": "หนังสือแจ้งเตือนต่ออายุ",
+                    "endorsement": "สลักหลัง",
+                    "credit_note": "ใบลดหนี้ / ใบคืนเบี้ย",
+                    "invoice": "ใบแจ้งหนี้",
+                    "receipt": "ใบเสร็จรับเงิน",
+                }
+                if parent and document_type != doc_pairing.UNKNOWN:
+                    attachment = {
+                        "policy_id": parent["id"],
+                        "doc_type": attachment_type,
+                        "label": labels.get(attachment_type, "เอกสารประกอบ"),
+                        "note": f"อ้างอิงเลขกรมธรรม์ {main.get('policy_number') or parent.get('policy_number')}",
+                        "pdf_url": url,
+                        "pdf_filename": fname,
+                        "pdf_size": len(blob),
+                        "coverage_start": main.get("coverage_start"),
+                        "coverage_end": main.get("coverage_end"),
+                    }
+                    for key in ("net_premium", "stamp_duty", "vat", "total_premium"):
+                        if main.get(key) is not None:
+                            attachment[key] = main[key]
+                    saved = supabase.table("policy_attachments").insert(attachment).execute()
+                    attached.append({
+                        "policy_id": parent["id"],
+                        "attachment_id": saved.data[0]["id"] if saved.data else None,
+                        "document_type": attachment_type,
+                    })
+                else:
+                    inbox_payload = {
+                        "document_type": document_type,
+                        "status": "needs_review",
+                        "reference_policy_number": main.get("policy_number"),
+                        "insured_name": main.get("insured_name"),
+                        "license_plate": main.get("license_plate"),
+                        "coverage_start": main.get("coverage_start"),
+                        "coverage_end": main.get("coverage_end"),
+                        "extracted_data": raw_main,
+                        "pdf_url": url,
+                        "pdf_filename": fname,
+                        "pdf_size": len(blob),
+                        "original_filename": source.get("orig_filename"),
+                    }
+                    saved = supabase.table("document_inbox").insert(inbox_payload).execute()
+                    inbox.append({
+                        "document_id": saved.data[0]["id"] if saved.data else None,
+                        "document_type": document_type,
+                    })
+                continue
+
             # อัปไฟล์ กธ ขึ้น storage (ถ้ามี)
             mf = it.get("main_file_id")
             if mf:
@@ -461,10 +594,14 @@ async def batch_commit(batch_id: str, payload: dict):
             failed.append({"reason": str(e)[:200],
                            "license_plate": main.get("license_plate")})
 
-    m["result"]["committed"] = {"created": len(created), "failed": len(failed)}
+    m["result"]["committed"] = {
+        "created": len(created), "attached": len(attached),
+        "inbox": len(inbox), "failed": len(failed),
+    }
     _save_manifest(batch_id, m)
-    return {"success": True, "created": created, "failed": failed,
-            "summary": {"created": len(created), "failed": len(failed)}}
+    return {"success": True, "created": created, "attached": attached, "inbox": inbox, "failed": failed,
+            "summary": {"created": len(created), "attached": len(attached),
+                        "inbox": len(inbox), "failed": len(failed)}}
 
 
 # ── 4) ล้าง staging ────────────────────────────────────────────────

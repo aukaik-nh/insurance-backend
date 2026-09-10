@@ -96,7 +96,7 @@ JSON keys (ตอบเป็น JSON เท่านั้น)
 ═══════════════════════════════════════════════════════════════
 
 {
-  "doc_type":                  "motor_main | motor_prb | endorsement | credit_note | fire | sme_property | unknown",
+  "doc_type":                  "motor_main | motor_prb | renewal_notice | endorsement | credit_note | invoice | receipt | fire | sme_property | other_policy | unknown",
   "policy_number":             "เลขกรมธรรม์ — คัดทั้งหมดตามเอกสาร รวม / และ -",
   "company_code":              "รหัสบริษัทประกัน 4-6 ตัว เช่น TMSTH, SAFETY, MSIG, AXA, VIR, BUI",
   "app_number":                "เลขใบคำขอ / application number ถ้ามี",
@@ -222,10 +222,12 @@ def _doc_type(val):
         "main": "motor_main", "motor": "motor_main", "motor_policy": "motor_main",
         "prb": "motor_prb", "พรบ": "motor_prb", "p_r_b": "motor_prb",
         "fire_insurance": "fire", "sme": "sme_property", "property": "sme_property",
+        "renewal": "renewal_notice", "renewal_letter": "renewal_notice",
+        "pa": "other_policy", "travel": "other_policy", "misc_policy": "other_policy",
     }
     raw = aliases.get(raw, raw)
     return raw if raw in {
-        "motor_main", "motor_prb", "endorsement", "credit_note", "fire", "sme_property", "unknown"
+        "motor_main", "motor_prb", "renewal_notice", "endorsement", "credit_note", "invoice", "receipt", "fire", "sme_property", "other_policy", "unknown"
     } else None
 
 

@@ -9,7 +9,7 @@ import os, psycopg2
 # ระบุ path ชัดเจนและให้ค่าใน .env ทับ environment ว่างที่ Windows/uvicorn reloader สืบทอดมา
 load_dotenv(Path(__file__).with_name(".env"), override=True)
 
-from routes import upload, policies, invoice, attachments, notify, batch, auth as auth_routes
+from routes import upload, policies, invoice, attachments, documents, notify, batch, auth as auth_routes
 from routes.auth import require_auth
 from services.line_notify import start_scheduler
 
@@ -86,7 +86,7 @@ $$;
 CREATE TABLE IF NOT EXISTS public.policy_attachments (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   policy_id     uuid NOT NULL REFERENCES public.insurance_policies(id) ON DELETE CASCADE,
-  doc_type      text NOT NULL CHECK (doc_type IN ('main','prb','endorsement','other')),
+  doc_type      text NOT NULL CHECK (doc_type IN ('main','prb','renewal_notice','endorsement','credit_note','invoice','receipt','other')),
   label         text,
   pdf_url       text,
   pdf_filename  text,
@@ -110,12 +110,41 @@ ALTER TABLE public.policy_attachments
   ADD COLUMN IF NOT EXISTS coverage_start date,
   ADD COLUMN IF NOT EXISTS coverage_end   date;
 
+ALTER TABLE public.policy_attachments
+  DROP CONSTRAINT IF EXISTS policy_attachments_doc_type_check;
+ALTER TABLE public.policy_attachments
+  ADD CONSTRAINT policy_attachments_doc_type_check
+  CHECK (doc_type IN ('main','prb','renewal_notice','endorsement','credit_note','invoice','receipt','other'));
+
 CREATE INDEX IF NOT EXISTS policy_attachments_policy_id_idx
   ON public.policy_attachments(policy_id);
 CREATE INDEX IF NOT EXISTS policy_attachments_type_idx
   ON public.policy_attachments(policy_id, doc_type);
 
 ALTER TABLE public.policy_attachments ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS public.document_inbox (
+  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at              timestamptz DEFAULT now(),
+  document_type           text NOT NULL DEFAULT 'unknown',
+  status                  text NOT NULL DEFAULT 'needs_review',
+  reference_policy_number text,
+  matched_policy_id       uuid REFERENCES public.insurance_policies(id) ON DELETE SET NULL,
+  insured_name            text,
+  license_plate           text,
+  coverage_start          date,
+  coverage_end            date,
+  extracted_data          jsonb NOT NULL DEFAULT '{}'::jsonb,
+  pdf_url                 text NOT NULL,
+  pdf_filename            text,
+  pdf_size                integer,
+  original_filename       text,
+  note                    text
+);
+CREATE INDEX IF NOT EXISTS document_inbox_status_idx
+  ON public.document_inbox(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS document_inbox_policy_ref_idx
+  ON public.document_inbox(reference_policy_number);
 
 DO $$
 BEGIN
@@ -144,7 +173,7 @@ def _run_migrations():
         with conn.cursor() as cur:
             cur.execute(_INIT_SQL)
         conn.close()
-        print("[migration] ✓ ตรวจสอบ / สร้างตาราง insurance_policies เรียบร้อย")
+        print("[migration] tables verified")
     except Exception as e:
         print(f"[migration] WARNING: {e}")
 
@@ -185,6 +214,7 @@ app.include_router(upload.router,      prefix="/api", tags=["Upload"],      depe
 app.include_router(policies.router,    prefix="/api", tags=["Policies"],    dependencies=_auth)
 app.include_router(invoice.router,     prefix="/api", tags=["Invoice"],     dependencies=_auth)
 app.include_router(attachments.router, prefix="/api", tags=["Attachments"], dependencies=_auth)
+app.include_router(documents.router,   prefix="/api", tags=["Documents"],   dependencies=_auth)
 app.include_router(batch.router,       prefix="/api", tags=["Batch"],       dependencies=_auth)
 # notify router disabled — ปิดแจ้งเตือน LINE ทั้งหมด (ส่งผิดเวลา)
 # app.include_router(notify.router,      prefix="/api", tags=["Notify"],      dependencies=_auth)

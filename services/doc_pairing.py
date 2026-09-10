@@ -21,10 +21,14 @@ from services.filename_matcher_v2 import norm_plate, coverage_year_ad, parse_fil
 # ── ชนิดเอกสาร ────────────────────────────────────────────────────
 MOTOR_MAIN   = "motor_main"      # ตารางกรมธรรม์ประกันภัยรถยนต์ (กธ)
 MOTOR_PRB    = "motor_prb"       # คุ้มครองผู้ประสบภัยจากรถ (พ.ร.บ.)
+RENEWAL_NOTICE = "renewal_notice" # หนังสือแจ้งเตือนต่ออายุ (อ้างอิง กธ. เดิม)
 ENDORSEMENT  = "endorsement"     # สลักหลัง / ยกเลิก (ร.ย.11)
 CREDIT_NOTE  = "credit_note"     # ใบลดหนี้ / ใบคืนเบี้ย
+INVOICE      = "invoice"         # ใบแจ้งหนี้
+RECEIPT      = "receipt"         # ใบเสร็จรับเงิน
 FIRE         = "fire"            # อัคคีภัย
 SME_PROPERTY = "sme_property"    # ประกันธุรกิจ SME / ทรัพย์สิน
+OTHER_POLICY = "other_policy"    # กรมธรรม์ PA / TA / ขนส่ง / ประเภทอื่น
 UNKNOWN      = "unknown"
 
 PAIRABLE = {MOTOR_MAIN, MOTOR_PRB}
@@ -89,18 +93,30 @@ def _filename_info(rec: dict) -> dict:
 
 # ── จัดประเภท (fallback เมื่อ AI ไม่ได้บอก doc_type มา) ──────────────
 _TITLE_RULES = [
+    (RENEWAL_NOTICE, ("หนังสือแจ้งเตือนต่ออายุ", "หนังสือแจ้งต่ออายุ", "RENEWAL NOTICE", "MOTOR INSURANCE RENEWAL")),
     (MOTOR_PRB,    ("ผู้ประสบภัยจากรถ", "คุ้มครองผู้ประสบภัย")),
     (MOTOR_MAIN,   ("ประกันภัยรถยนต์", "MOTOR INSURANCE SCHEDULE", "Safety 4U")),
     (ENDORSEMENT,  ("สลักหลัง", "ยกเลิกกรมธรรม์", "ร.ย.11", "ร.ย. 11")),
     (CREDIT_NOTE,  ("ใบลดหนี้", "ใบคืนเบี้ย", "CREDIT NOTE", "CREDIT-NOTE")),
+    (INVOICE,      ("ใบแจ้งหนี้", "INVOICE")),
+    (RECEIPT,      ("ใบเสร็จรับเงิน", "RECEIPT")),
     (SME_PROPERTY, ("สรรพธุรกิจ", "SME INSURANCE")),
     (FIRE,         ("อัคคีภัย", "FIRE INSURANCE")),
+    (OTHER_POLICY, ("อุบัติเหตุส่วนบุคคล", "PERSONAL ACCIDENT", "TRAVEL INSURANCE", "ประกันภัยการเดินทาง")),
 ]
 
 
 def classify(rec: dict) -> str:
     """คืน doc_type — ถ้า AI ส่ง doc_type มาแล้วใช้เลย ไม่งั้นเดาจากหัวเอกสาร/เลขกรมธรรม์"""
     given = (rec.get("doc_type") or "").strip()
+
+    haystack = " ".join(str(rec.get(k) or "") for k in
+                        ("title", "raw_text", "doc_title", "policy_type"))
+    if given == RENEWAL_NOTICE or any(
+        keyword in haystack.upper()
+        for keyword in ("RENEWAL NOTICE", "MOTOR INSURANCE RENEWAL")
+    ) or "หนังสือแจ้งเตือนต่ออายุ" in haystack or "หนังสือแจ้งต่ออายุ" in haystack:
+        return RENEWAL_NOTICE
 
     # Tokio Marine encodes the document family in the policy number. This is
     # more reliable than a noisy title OCR (a PRB can still contain the words
@@ -120,10 +136,9 @@ def classify(rec: dict) -> str:
     if re.search(r"(?:^|\s)กธ\.?\s*\d", filename, re.IGNORECASE):
         return MOTOR_MAIN
 
-    haystack = " ".join(str(rec.get(k) or "") for k in
-                        ("title", "raw_text", "doc_title", "policy_type"))
+    haystack_upper = haystack.upper()
     for doc_type, keywords in _TITLE_RULES:
-        if any(kw in haystack for kw in keywords):
+        if any(kw.upper() in haystack_upper for kw in keywords):
             return doc_type
 
     # เดาจากรูปแบบเลขกรมธรรม์ (Tokio Marine): D0-70=รถยนต์, D0-72=พ.ร.บ.,

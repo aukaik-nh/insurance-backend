@@ -13,13 +13,14 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from routes.upload import _upload_pdf_to_storage, BUCKET_NAME, _make_display_filename
+from services.document_naming import clean_component
 
 _executor_extract = ThreadPoolExecutor(max_workers=2)
 
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=4)
 
-ALLOWED_TYPES = {"prb", "endorsement", "other"}
+ALLOWED_TYPES = {"prb", "renewal_notice", "endorsement", "credit_note", "invoice", "receipt", "other"}
 
 
 # cache client at module level — reuse connection pool (ดู comment ใน routes/policies.py)
@@ -154,6 +155,8 @@ async def upload_attachment(
             final_label = f"พ.ร.บ. ปี {year_be}"
         except Exception:
             pass
+    if not final_label and doc_type == "renewal_notice":
+        final_label = "หนังสือแจ้งเตือนต่ออายุ"
 
     # auto-rename pdf_filename — พ.ร.บ. ใช้ทะเบียน, สลักหลังตามประเภทกรมธรรม์ parent
     display_filename = _make_display_filename(
@@ -166,6 +169,10 @@ async def upload_attachment(
         name=parent_name,
     )
 
+    if display_filename == "รอตรวจข้อมูล.pdf" and doc_type in {"endorsement", "credit_note", "invoice", "receipt", "other"}:
+        display_filename = clean_component(file.filename) or "เอกสารประกอบ.pdf"
+        if not display_filename.lower().endswith(".pdf"):
+            display_filename += ".pdf"
     if display_filename == "รอตรวจข้อมูล.pdf":
         raise HTTPException(status_code=422, detail="ข้อมูลตั้งชื่อไฟล์ไม่ครบ กรุณาตรวจข้อมูลก่อนบันทึก")
 
