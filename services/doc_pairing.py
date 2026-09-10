@@ -35,7 +35,7 @@ SCORE_PLATE_MATCH   = 30
 SCORE_YEAR_MATCH    = 15
 SCORE_NAME_SIMILAR  = 10
 SCORE_CAR_MATCH     = 5
-SCORE_FILENAME_PLATE = 20    # ชื่อไฟล์มาตรฐาน Baby78 มีทะเบียนรถอยู่ต้นชื่อ
+SCORE_FILENAME_PLATE = 25    # ทะเบียน+ปีในชื่อไฟล์ครบพอเสนอเป็นคู่ให้คนตรวจ
 SCORE_FILENAME_YEAR  = 5
 PENALTY_YEAR_DIFF    = -20
 
@@ -101,8 +101,24 @@ _TITLE_RULES = [
 def classify(rec: dict) -> str:
     """คืน doc_type — ถ้า AI ส่ง doc_type มาแล้วใช้เลย ไม่งั้นเดาจากหัวเอกสาร/เลขกรมธรรม์"""
     given = (rec.get("doc_type") or "").strip()
-    if given:
+
+    # Tokio Marine encodes the document family in the policy number. This is
+    # more reliable than a noisy title OCR (a PRB can still contain the words
+    # "MOTOR INSURANCE" and otherwise be misclassified as a main policy).
+    pol = str(rec.get("policy_number") or "")
+    for prefix, doc_type in (("-72-", MOTOR_PRB), ("-70-", MOTOR_MAIN),
+                             ("-10-", FIRE), ("-11-", SME_PROPERTY)):
+        if prefix in pol:
+            return doc_type
+
+    if given and given != UNKNOWN:
         return given
+
+    filename = str(rec.get("orig_filename") or rec.get("pdf_filename") or "")
+    if re.search(r"พรบ|พ\.ร\.บ", filename, re.IGNORECASE):
+        return MOTOR_PRB
+    if re.search(r"(?:^|\s)กธ\.?\s*\d", filename, re.IGNORECASE):
+        return MOTOR_MAIN
 
     haystack = " ".join(str(rec.get(k) or "") for k in
                         ("title", "raw_text", "doc_title", "policy_type"))
@@ -112,12 +128,6 @@ def classify(rec: dict) -> str:
 
     # เดาจากรูปแบบเลขกรมธรรม์ (Tokio Marine): D0-70=รถยนต์, D0-72=พ.ร.บ.,
     # D0-10=อัคคีภัย, D0-11=SME
-    pol = str(rec.get("policy_number") or "")
-    for prefix, doc_type in (("-72-", MOTOR_PRB), ("-70-", MOTOR_MAIN),
-                             ("-10-", FIRE), ("-11-", SME_PROPERTY)):
-        if prefix in pol:
-            return doc_type
-
     return UNKNOWN
 
 

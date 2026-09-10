@@ -6,7 +6,7 @@ Flow:  POST /batch/extract  → อัปไฟล์เข้า staging + OCR 
        POST /batch/{id}/commit → บันทึกเฉพาะรายการที่คนยืนยันแล้วลง DB จริง
 
 ไฟล์ที่อัปจะพักไว้ใน staging (ดิสก์ชั่วคราว) ยังไม่แตะฐานข้อมูลจริง
-จนกว่าจะเรียก /commit — ออกแบบตามหลัก "AI เร่งงาน ไม่ใช่ตัดสินใจแทน"
+จนกว่าจะเรียก /commit — ตัวอ่านช่วยเตรียมข้อมูล แต่ผู้ใช้ต้องตรวจหลักฐานก่อนบันทึก
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse

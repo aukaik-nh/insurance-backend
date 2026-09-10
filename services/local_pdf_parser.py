@@ -495,6 +495,50 @@ def _ocr_text(file_bytes: bytes, max_pages_override: int | None = None, artifact
         doc.close()
 
 
+def _remaining_pages_text(file_bytes: bytes) -> str:
+    """Read pages after the first, preferring embedded text before OCR.
+
+    The first page is handled by the layout reader. Later pages often contain
+    endorsements or premium details, so silently ignoring them can produce an
+    incomplete database record.
+    """
+    import pymupdf as fitz
+    import pytesseract
+    from PIL import Image, ImageFilter, ImageOps
+
+    max_pages = max(1, min(int(os.getenv("LOCAL_OCR_MAX_PAGES", "10")), 20))
+    dpi = max(150, min(int(os.getenv("LOCAL_OCR_DPI", "220")), 350))
+    language = os.getenv("LOCAL_OCR_LANG", "tha+eng")
+    config = re.sub(r"--psm\s+\d+", "--psm 11", _configure_tesseract(pytesseract, language))
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        pages = []
+        scale = dpi / 72
+        for page_number in range(1, min(doc.page_count, max_pages)):
+            page = doc[page_number]
+            native = page.get_text("text", sort=True).strip()
+            if len(re.sub(r"\s+", "", native)) >= 40:
+                pages.append(native)
+                continue
+            page_scale = min(scale, 3600 / max(page.rect.width, page.rect.height))
+            pix = page.get_pixmap(
+                matrix=fitz.Matrix(page_scale, page_scale), colorspace=fitz.csGRAY, alpha=False
+            )
+            try:
+                with Image.frombytes("L", (pix.width, pix.height), pix.samples) as image:
+                    prepared = ImageOps.autocontrast(image, cutoff=2).filter(ImageFilter.SHARPEN)
+                    pages.append(
+                        pytesseract.image_to_string(
+                            prepared, lang=language, config=config, timeout=90
+                        ).strip()
+                    )
+            finally:
+                pix = None
+        return "\n".join(page for page in pages if page).strip()
+    finally:
+        doc.close()
+
+
 def parse_pdf_locally(file_bytes: bytes, filename: str = "") -> dict[str, Any]:
     """Parse a PDF without a paid API; OCR is used only when no text layer exists."""
     try:
@@ -572,6 +616,11 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                                 generic = _fill_missing_candidates(
                                     generic, _parse_text(second_text, "python_tesseract_block_fallback")
                                 )
+                        later_text = _remaining_pages_text(file_bytes)
+                        if later_text:
+                            generic = _fill_missing_candidates(
+                                generic, _parse_text(later_text, "later_pages_supplement")
+                            )
                         filename_name = _insured_name_from_filename(filename)
                         if filename_name:
                             generic["insured_name"] = filename_name
@@ -610,7 +659,7 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                         generic["field_evidence"] = evidence
                         generic["review_fields"] = [field for field, item in evidence.items()
                                                     if item["status"] == "review"]
-                        structured = ["ผลอ่านหน้าแรก · ช่องรอตรวจเป็นข้อมูลเบื้องต้น กรุณาเทียบกับภาพต้นฉบับ"]
+                        structured = ["ผลอ่านเอกสาร · ช่องรอตรวจเป็นข้อมูลเบื้องต้น กรุณาเทียบกับภาพต้นฉบับ"]
                         for field, item in evidence.items():
                             status = "รอตรวจ" if item["status"] == "review" else "อ่านตรงกัน · โปรดตรวจต้นฉบับ"
                             structured.append(f"{item['label']} [{status}]\n{item['text']}")
@@ -636,6 +685,12 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                     if fallback_text:
                         generic_supplement = _parse_text(
                             fallback_text, "python_tesseract_full_page_supplement"
+                        )
+                    later_text = _remaining_pages_text(file_bytes)
+                    if later_text:
+                        later_supplement = _parse_text(later_text, "later_pages_supplement")
+                        generic_supplement = _fill_missing_candidates(
+                            generic_supplement or _blank(), later_supplement
                         )
     except Exception as exc:
         error_code = "ocr_dependency_missing" if isinstance(exc, ImportError) else f"{stage}_failed"

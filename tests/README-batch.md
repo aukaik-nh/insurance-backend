@@ -18,4 +18,4 @@ Each policy and its PRB attachment is inserted within one PostgreSQL transaction
 
 PDF uploads precede the database transaction. R2 and PostgreSQL do not share a transaction; a failed database insertion can leave an unreferenced uploaded object. No production records were created by the automated tests.
 
-Batch extraction uses local OCR of the first page. Multi-page extraction is not yet supported by this local batch reader; inspect all original pages before saving. Thai names and addresses can still require correction. No 100% accuracy claim is made. Evaluate a pinned cloud OCR provider on representative, manually labelled PDFs before replacing the existing reader.
+Batch extraction uses a strict layout reader on the first page, then embedded text or local OCR on later pages (up to LOCAL_OCR_MAX_PAGES, default 10 and capped at 20). Later-page values only fill missing fields and remain marked for review. Thai names and addresses can still require correction. No 100% accuracy claim is made.

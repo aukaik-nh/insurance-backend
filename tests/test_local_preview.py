@@ -11,10 +11,20 @@ from PIL import Image
 import pymupdf
 
 from routes import upload
-from services.local_pdf_parser import parse_ocr_text, parse_pdf_image_locally
+from services.local_pdf_parser import _remaining_pages_text, parse_ocr_text, parse_pdf_image_locally
 
 
 class PreviewTests(unittest.TestCase):
+    def test_later_pages_use_embedded_text_without_ocr(self):
+        with pymupdf.open() as doc:
+            doc.new_page()
+            second = doc.new_page()
+            second.insert_text((72, 72), "Policy No D0-70-69/123456 additional premium details")
+            blob = doc.tobytes()
+        with patch("pytesseract.image_to_string", side_effect=AssertionError("OCR should not run")):
+            text = _remaining_pages_text(blob)
+        self.assertIn("D0-70-69/123456", text)
+
     def test_preview_contract(self):
         result = {"raw_text": "example", "parse_engine": "python_tesseract_image",
                   "requires_review": True, "preview": {"image_data_url": "data:image/png;base64,test"}}

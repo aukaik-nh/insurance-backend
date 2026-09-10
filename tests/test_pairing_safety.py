@@ -1,5 +1,5 @@
 import unittest
-from services.doc_pairing import pair_documents, score_pair
+from services.doc_pairing import classify, pair_documents, score_pair
 
 class PairingSafetyTests(unittest.TestCase):
     def docs(self):
@@ -34,3 +34,14 @@ class PairingSafetyTests(unittest.TestCase):
         result = pair_documents(list(reversed(records)))
         self.assertEqual(len(result['pairs']), 10)
         self.assertTrue(all(pair['main']['chassis_no'] == pair['prb']['chassis_no'] for pair in result['pairs']))
+
+    def test_policy_number_corrects_noisy_prb_classification(self):
+        record = {'doc_type': 'motor_main', 'policy_number': 'D0-72-69/004889'}
+        self.assertEqual(classify(record), 'motor_prb')
+
+    def test_filename_plate_and_year_proposes_review_pair(self):
+        main = {'policy_number': 'D0-70-69/1', 'orig_filename': '1กก8803 กธ.69.pdf'}
+        prb = {'policy_number': 'D0-72-69/2', 'orig_filename': '1กก8803 พรบ.69.pdf'}
+        result = pair_documents([main, prb])
+        self.assertEqual(len(result['pairs']), 1)
+        self.assertEqual(result['pairs'][0]['status'], 'review')
