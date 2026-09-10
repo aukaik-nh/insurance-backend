@@ -108,7 +108,10 @@ def _read(image, config, language="eng", scale=1, psm=7, deadline=None, strip_ru
         image = Image.fromarray(clean)
     crop = image.resize((max(1, round(image.width*scale)), max(1, round(image.height*scale))), Image.Resampling.LANCZOS)
     crop = ImageOps.expand(crop, border=16, fill=255)
-    timeout = min(20, max(1, deadline-time.monotonic())) if deadline is not None else 20
+    # A crop that finishes in a few seconds locally can need more than 20s on
+    # a shared production CPU. The document-level deadline still bounds the
+    # total work, so allow each active OCR subprocess enough time to complete.
+    timeout = min(60, max(5, deadline-time.monotonic())) if deadline is not None else 60
     return _native_text_and_confidence(crop, language, f"{config} --psm {psm} {extra_config}".strip(), timeout)
 
 
