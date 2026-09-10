@@ -136,7 +136,7 @@ def _native_text_and_confidence(image, language, config, timeout):
 
 
 def _evidence_text(evidence):
-    parts = ["ข้อความเฉพาะส่วนสำคัญของหน้าแรก · ค่าที่ระบุว่ารอตรวจจะไม่ถูกกรอกอัตโนมัติ"]
+    parts = ["ผลอ่านหน้าแรก · ช่องรอตรวจเป็นข้อมูลเบื้องต้น กรุณาเทียบกับภาพต้นฉบับ"]
     for field, item in evidence.items():
         status = "รอตรวจ" if item["status"] == "review" else "อ่านตรงกัน · โปรดตรวจต้นฉบับ"
         parts.append(f"{LABELS[field]} [{status}]\n{item['text'] or 'อ่านไม่ได้'}")
@@ -673,7 +673,6 @@ def read_document(image: Image.Image):
         # table anchors are a safer layout signature than requiring that one
         # noisy five-letter token.
         valid = ("motorinsuranceschedule" in anchors[0]
-                 and ("insured" in anchors[4] or "period" in anchors[4])
                  and "from" in anchors[4] and "to" in anchors[4]
                  and "chassis" in anchors[6] and "license" in anchors[6]
                  and "netpremium" in anchors[15] and "stampduty" in anchors[15] and "vat" in anchors[15])
@@ -720,6 +719,7 @@ def read_document(image: Image.Image):
                     # vertical offsets above the barcode.  Pick the crop that
                     # yields the most structurally valid reads.
                     candidate_boxes.append(band(0, .167, .44, .31, .65))
+                    candidate_boxes.append(band(0, .165, .43, .30, .64))
                 elif field == "insured_name":
                     candidate_boxes.append(band(1, .198, .06, .76, .32))
                 elif field == "insured_address":
@@ -747,6 +747,10 @@ def read_document(image: Image.Image):
                 item = decide(field, reads)
                 if field in ("insured_name", "insured_address"):
                     item["text"] = _clean_review_prose(field, reads[0]["text"])
+                    if item["text"]:
+                        item["manual_value"] = item["text"]
+                elif field == "car_make" and reads[0]["text"].strip():
+                    item["manual_value"] = reads[0]["text"].strip()
                 if field in ("coverage_start", "coverage_end"):
                     # The 2x pass retains Thai month glyphs more reliably.  The
                     # value still requires both passes to normalize to one date.

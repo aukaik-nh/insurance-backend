@@ -174,6 +174,26 @@ class PreviewTests(unittest.TestCase):
         parsed = parse_ocr_text("Policy No. DO-70-68/031970")
         self.assertEqual(parsed["policy_number"], "D0-70-68/031970")
 
+    def test_segmented_review_values_fill_form_and_split_vehicle(self):
+        with pymupdf.open() as doc:
+            doc.new_page()
+            blob = doc.tobytes()
+        fields = {key: {"status": "review", "value": None, "text": value,
+                        "manual_value": value} for key, value in {
+            "insured_name": "นาย ทดสอบ ระบบ", "insured_address": "99 แขวงทดสอบ",
+            "car_make": "HONDA CITY",
+        }.items()}
+        with patch("services.segmented_ocr.read_document", return_value={
+            "layout": "tmsth_motor_schedule_v1", "field_evidence": fields,
+            "raw_text": "test",
+        }), patch("pytesseract.image_to_string", return_value=""):
+            result = parse_pdf_image_locally(blob)
+        self.assertEqual(result["insured_name"], "นาย ทดสอบ ระบบ")
+        self.assertEqual(result["insured_address"], "99 แขวงทดสอบ")
+        self.assertEqual(result["car_make"], "HONDA")
+        self.assertEqual(result["car_model"], "CITY")
+        self.assertIn("car_model", result["review_fields"])
+
     def test_noisy_renewal_notice_extracts_core_vehicle_fields(self):
         parsed = parse_ocr_text(
             "0-70-68/08 1970\n30/11/2026 - 30/11/2027\nRenewal Period Insured\n"

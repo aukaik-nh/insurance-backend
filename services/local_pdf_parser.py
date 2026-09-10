@@ -610,7 +610,7 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                         generic["field_evidence"] = evidence
                         generic["review_fields"] = [field for field, item in evidence.items()
                                                     if item["status"] == "review"]
-                        structured = ["ข้อความเฉพาะส่วนสำคัญของหน้าแรก · ค่าที่ระบุว่ารอตรวจจะไม่ถูกกรอกอัตโนมัติ"]
+                        structured = ["ผลอ่านหน้าแรก · ช่องรอตรวจเป็นข้อมูลเบื้องต้น กรุณาเทียบกับภาพต้นฉบับ"]
                         for field, item in evidence.items():
                             status = "รอตรวจ" if item["status"] == "review" else "อ่านตรงกัน · โปรดตรวจต้นฉบับ"
                             structured.append(f"{item['label']} [{status}]\n{item['text']}")
@@ -686,6 +686,14 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                 "label": _FIELD_LABELS.get(field, field),
                 "source": "full_page_supplement",
             }
+    if result.get("car_make"):
+        make, model, _ = _vehicle_details(str(result["car_make"]))
+        if make and model:
+            result["car_make"], result["car_model"] = make, model
+            original = evidence.get("car_make", {})
+            for field, value in (("car_make", make), ("car_model", model)):
+                evidence[field] = {**original, "text": value, "manual_value": value,
+                                   "label": "ยี่ห้อรถ" if field == "car_make" else "รุ่นรถ"}
     filename_name = _insured_name_from_filename(filename)
     if filename_name:
         result["insured_name"] = filename_name
@@ -695,7 +703,7 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
             "text": filename_name, "alternatives": [filename_name],
             "label": _FIELD_LABELS["insured_name"], "source": "filename",
         }
-    warnings = (["ช่องที่อ่านไม่ชัดหรืออ่านซ้ำไม่ตรงกันถูกเว้นไว้ กรุณาตรวจต้นฉบับก่อนกรอก"]
+    warnings = (["แสดงข้อมูลที่อ่านได้แล้ว กรุณาตรวจช่องสีเหลืองกับภาพต้นฉบับก่อนบันทึก"]
                 if evidence else ["ยังไม่รองรับรูปแบบตารางนี้ จึงไม่กรอกข้อมูลอัตโนมัติ กรุณากรอกโดยเทียบต้นฉบับ"])
     result.update({
         **extracted, "parse_engine": "python_tesseract_segmented",
