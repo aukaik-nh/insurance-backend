@@ -668,15 +668,25 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
                         # notices: PSM 11 preserves sparse tables while PSM 6
                         # more reliably keeps policy numbers and vehicle rows.
                         if fallback_engine == "python_tesseract_full_page_fallback":
-                            second_text = _ordered_full_page_ocr(image, pytesseract, ocr_config)
-                            if second_text and second_text != fallback_text:
-                                generic = _fill_missing_candidates(
-                                    generic, _parse_text(second_text, "python_tesseract_block_fallback")
+                            try:
+                                second_text = _ordered_full_page_ocr(image, pytesseract, ocr_config)
+                                if second_text and second_text != fallback_text:
+                                    generic = _fill_missing_candidates(
+                                        generic, _parse_text(second_text, "python_tesseract_block_fallback")
+                                    )
+                            except Exception:
+                                generic.setdefault("parse_warnings", []).append(
+                                    "รอบอ่านเสริมใช้เวลานานเกินไป จึงแสดงผลจากรอบแรกให้ตรวจ"
                                 )
                         if not generic.get("policy_number"):
-                            generic["policy_number"] = _targeted_policy_number_ocr(
-                                image, pytesseract, ocr_config
-                            )
+                            try:
+                                generic["policy_number"] = _targeted_policy_number_ocr(
+                                    image, pytesseract, ocr_config
+                                )
+                            except Exception:
+                                generic.setdefault("parse_warnings", []).append(
+                                    "กรอบเลขกรมธรรม์ใช้เวลานานเกินไป กรุณาตรวจและกรอกเลขจากต้นฉบับ"
+                                )
                         later_text = _remaining_pages_text(file_bytes)
                         if later_text:
                             generic = _fill_missing_candidates(

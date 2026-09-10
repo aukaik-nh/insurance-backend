@@ -87,6 +87,16 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(result["policy_number"], "D0-70-69/022848")
         self.assertTrue(result["requires_review"])
 
+    def test_supplement_timeout_keeps_first_pass_result(self):
+        with pymupdf.open() as doc:
+            doc.new_page()
+            blob = doc.tobytes()
+        first = "Policy No D0-70-69/022848"
+        with patch.dict("os.environ", {"RENDER_GIT_COMMIT": "test"}), \
+             patch("pytesseract.image_to_string", side_effect=[first, RuntimeError("timeout")]):
+            result = parse_pdf_image_locally(blob)
+        self.assertEqual(result["policy_number"], "D0-70-69/022848")
+
     def test_known_layout_supplements_empty_fields_and_prefers_clear_filename_name(self):
         with pymupdf.open() as doc:
             doc.new_page()
