@@ -574,7 +574,10 @@ def parse_pdf_image_locally(file_bytes: bytes, filename: str = "") -> dict[str, 
         stage = "render"
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             page = doc[0]
-            scale = min(300 / 72, 3600 / max(page.rect.width, page.rect.height))
+            # Keep identifier crops sharp. Production workers get a longer OCR
+            # deadline rather than sacrificing policy/VIN accuracy.
+            layout_dpi = max(200, min(int(os.getenv("LOCAL_OCR_LAYOUT_DPI", "300")), 300))
+            scale = min(layout_dpi / 72, 3600 / max(page.rect.width, page.rect.height))
             pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csGRAY, alpha=False)
             artifacts["image_data_url"] = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode("ascii")
             artifacts["page_count"] = doc.page_count

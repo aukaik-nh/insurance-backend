@@ -644,7 +644,10 @@ def validate_groups(evidence):
 
 def read_document(image: Image.Image):
     config = model_config()
-    deadline = time.monotonic() + 80
+    # A small production CPU can need longer than a developer machine. Keep a
+    # hard deadline so one damaged file cannot block the whole batch forever.
+    timeout_seconds = max(60, min(int(os.getenv("SEGMENTED_OCR_TIMEOUT_SECONDS", "180")), 300))
+    deadline = time.monotonic() + timeout_seconds
     deskewed, rows, columns, angle = table_geometry(image)
     result = {"layout": None, "field_evidence": {}, "deskew_degrees": round(angle, 3)}
     fire = _read_fire(deskewed, rows, columns, config, deadline)

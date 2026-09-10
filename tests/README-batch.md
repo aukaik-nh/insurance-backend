@@ -8,6 +8,7 @@ Use the PDF management screen: Import -> Review -> History. Select up to 20 PDFs
 - Set BATCH_STAGING_ROOT to a persistent mounted directory in production. The default .batch-staging directory survives process restarts but not an ephemeral hosting instance replacement.
 - Batch extraction always uses local OCR with the pinned Tesseract models. Install Tesseract and the Python OCR dependencies on the worker. No Gemini key or ENABLE_LOCAL_OCR_FALLBACK setting is required; batch extraction never calls Gemini.
 - BATCH_MAX_FILES defaults to 20. BATCH_MAX_TOTAL_BYTES defaults to 100 MB.
+- LOCAL_OCR_LAYOUT_DPI defaults to 300 and SEGMENTED_OCR_TIMEOUT_SECONDS defaults to 180 seconds per file; tune these only after measuring the production worker.
 - Each completed file is checkpointed. Startup resumes manifests without final results, skipping completed reads. Failed extraction remains available for manual review; it is not silently saved.
 
 ## Data guarantees and limits
