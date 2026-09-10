@@ -145,8 +145,7 @@ def score_pair(main: dict, prb: dict) -> tuple[int, list[str]]:
         score += SCORE_YEAR_MATCH
         why.append("ปีคุ้มครองตรง")
     elif ym and yp and ym != yp:
-        score += PENALTY_YEAR_DIFF
-        why.append("ปีคุ้มครองต่างกัน")
+        return -999, ["ปีคุ้มครองต่างกัน ต้องตรวจแยกปี"]
 
     if _name_similarity(main.get("insured_name"), prb.get("insured_name")) >= 0.85:
         score += SCORE_NAME_SIMILAR
@@ -228,6 +227,12 @@ def pair_documents(records: list[dict]) -> dict:
         )
         status = "auto" if (
             score >= THRESHOLD_AUTO and has_vehicle_anchor and margin >= MIN_AUTO_MARGIN
+            and _year(m) is not None and _year(m) == _year(p)
+            and not (m.get("requires_review") or p.get("requires_review"))
+            and not (m.get("parse_error") or p.get("parse_error"))
+            and not (m.get("review_fields") or p.get("review_fields"))
+            and not (m.get("license_plate") and p.get("license_plate")
+                     and norm_plate(m["license_plate"]) != norm_plate(p["license_plate"]))
         ) else "review"
         pairs.append({
             "main":    m,

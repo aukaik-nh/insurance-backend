@@ -15,7 +15,7 @@ from functools import lru_cache
 import os, json, uuid, asyncio, tempfile, shutil, hashlib, traceback, time
 from datetime import datetime, timezone
 
-from services.gemini_parser import parse_with_gemini
+from services.gemini_parser import parse_with_gemini, is_available as gemini_available
 from services.supabase_shim import create_client
 from services import doc_pairing
 from routes.upload import (
@@ -26,7 +26,7 @@ from routes.upload import (
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=1)
 
-STAGING_ROOT = os.path.join(tempfile.gettempdir(), "insurance_batch_staging")
+STAGING_ROOT = os.path.abspath(os.getenv("BATCH_STAGING_ROOT", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".batch-staging")))
 # รับได้สูงสุด 20 ไฟล์ต่อกองเป็นค่าเริ่มต้น; ปรับผ่าน environment ได้
 try:
     MAX_FILES = max(1, int(os.getenv("BATCH_MAX_FILES", "20")))
@@ -45,6 +45,19 @@ except ValueError:
 @lru_cache(maxsize=1)
 def get_supabase():
     return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+
+def _atomic_json(path: str, data: dict) -> None:
+    temporary = path + "." + uuid.uuid4().hex + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 # ── staging helpers ────────────────────────────────────────────────
@@ -67,8 +80,7 @@ def _load_manifest(batch_id: str) -> dict:
 
 def _save_manifest(batch_id: str, data: dict) -> None:
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    with open(_manifest_path(batch_id), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=1)
+    _atomic_json(_manifest_path(batch_id), data)
 
 
 # ── progress (แยกไฟล์เล็ก ให้ client poll ระหว่างอ่าน) ──────────────
@@ -78,8 +90,7 @@ def _progress_path(batch_id: str) -> str:
 
 def _write_progress(batch_id: str, **kw) -> None:
     try:
-        with open(_progress_path(batch_id), "w", encoding="utf-8") as fh:
-            json.dump(kw, fh, ensure_ascii=False)
+        _atomic_json(_progress_path(batch_id), kw)
     except Exception:
         pass
 
@@ -97,55 +108,36 @@ def _read_progress(batch_id: str) -> dict:
 
 def _read_one_file(bdir: str, rec: dict) -> dict:
     """AI Vision อ่านภาพจาก PDF; OCR ในเครื่องเป็น fallback เมื่อ API ใช้ไม่ได้."""
+    if rec.get("read_complete"):
+        return rec
     if rec["same_file_as"]:
         rec["parsed"] = {}
         rec["parse_error"] = f"ไฟล์ซ้ำกับ {rec['same_file_as']} — ข้ามการอ่าน"
         return rec
     with open(os.path.join(bdir, f"{rec['file_id']}.pdf"), "rb") as fh:
         blob = fh.read()
-    for attempt in range(3):
+    local_enabled = os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() in {"1", "true", "yes"}
+    parsed = None
+    if local_enabled:
+        from services.local_pdf_parser import parse_pdf_image_locally
+        parsed = parse_pdf_image_locally(blob, filename=rec["orig_filename"])
+        parsed.pop("preview", None)
+    if gemini_available():
         try:
-            rec["parsed"] = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
-            rec["parsed"]["parse_engine"] = "gemini_vision"
-            rec.pop("parse_error", None)
-            return rec
-        except Exception as error:
-            message = str(error)
-            if "API_KEY_INVALID" in message or "API key not valid" in message:
-                rec["parsed"] = {}
-                rec["parse_error"] = "GEMINI_API_KEY ไม่ถูกต้องหรือถูกปิดใช้งาน — กรุณาแก้ไขค่าตั้งค่า AI ก่อนเริ่มกองใหม่"
-                return rec
-            is_rate_limit = any(token in message.lower() for token in ("429", "resource_exhausted", "quota"))
-            if is_rate_limit and attempt < 2:
-                time.sleep(15 * (attempt + 1))
-                continue
-
-            # OCR ในเครื่องใช้ Pillow/Numpy/Tesseract มากและทำให้ Render Free (512MB)
-            # ล้มได้ จึงปิดเป็นค่าเริ่มต้น และโหลดโมดูลเฉพาะเมื่อผู้ดูแลเปิดใช้เท่านั้น.
-            enable_ocr = os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() in {"1", "true", "yes"}
-            if not enable_ocr:
-                rec["parsed"] = {}
-                rec["parse_error"] = (
-                    "AI อ่านไม่สำเร็จ — กรุณาลองใหม่ภายหลังหรือกรอกข้อมูลเอง "
-                    "(ระบบไม่เปิด OCR สำรองเพื่อป้องกัน server หน่วยความจำเต็ม)"
-                )
-                return rec
-
-            # ไม่ทิ้งทั้งกองหากผู้ดูแลเปิด OCR สำรองไว้: import แบบ lazy กัน RAM ตอนเริ่มระบบ
-            try:
-                from services.pdf_extractor import extract_text_from_pdf
-                from services.claude_parser import parse_insurance_data
-                raw_text = extract_text_from_pdf(blob)
-                rec["parsed"] = parse_insurance_data(raw_text, filename=rec["orig_filename"]) or {}
-                rec["parsed"].update({"raw_text": raw_text[:12000], "parse_engine": "ocr_fallback"})
-                rec["parse_error"] = (
-                    "AI ชนโควตา — ใช้ OCR สำรอง กรุณาตรวจทานก่อนบันทึก"
-                    if is_rate_limit else f"AI อ่านไม่สำเร็จ — ใช้ OCR สำรอง ({message[:80]})"
-                )
-            except Exception as fallback_error:
-                rec["parsed"] = {}
-                rec["parse_error"] = f"อ่านเอกสารไม่สำเร็จ: {str(fallback_error)[:160]}"
-            return rec
+            ai = parse_with_gemini(blob, filename=rec["orig_filename"]) or {}
+            from routes.upload import _merge_verified_result
+            parsed = _merge_verified_result(parsed or {}, ai)
+        except Exception:
+            if parsed is not None:
+                parsed.setdefault("parse_warnings", []).append(
+                    "AI ไม่พร้อม แสดงผล OCR สำรอง กรุณาตรวจต้นฉบับ")
+    if parsed is None or parsed.get("parse_engine") == "local_ocr_failed":
+        rec["parsed"] = parsed or {}
+        rec["parse_error"] = "อ่านไม่สำเร็จ กรุณาลองใหม่หรือกรอกข้อมูลจากต้นฉบับ"
+    else:
+        rec["parsed"] = parsed
+        rec["parsed"]["requires_review"] = True
+        rec.pop("parse_error", None)
     return rec
 
 
@@ -172,6 +164,10 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
                             chunk_size=BATCH_READ_CHUNK_SIZE)
             async with sem:
                 await loop.run_in_executor(_executor, _read_one_file, bdir, r)
+            r["read_complete"] = True
+            manifest = _load_manifest(batch_id)
+            manifest["files"] = staged
+            _save_manifest(batch_id, manifest)
             done += 1
             _write_progress(batch_id, status="processing", done=done, total=total,
                             current=r.get("orig_filename"), phase="completed", chunk=chunk_no,
@@ -195,12 +191,28 @@ async def _process_batch(batch_id: str, bdir: str, staged: list[dict]) -> None:
         result = doc_pairing.pair_documents(unique)
         result["duplicates"] = dups
         result["summary"]["duplicates"] = len(dups)
-        _save_manifest(batch_id, {"batch_id": batch_id, "files": staged, "result": result})
+        manifest = _load_manifest(batch_id)
+        manifest.update(files=staged, result=result)
+        _save_manifest(batch_id, manifest)
         _write_progress(batch_id, status="done", done=total, total=total, current=None,
                         chunk=total_chunks, chunk_total=total_chunks, chunk_size=BATCH_READ_CHUNK_SIZE)
     except Exception as e:
         print("[batch-process] ERROR:\n", traceback.format_exc())
         _write_progress(batch_id, status="error", done=0, total=total, current=None, error=str(e)[:200])
+
+
+@router.on_event("startup")
+async def resume_staged_batches():
+    """Resume unfinished work from the configured persistent staging volume."""
+    if not os.path.isdir(STAGING_ROOT):
+        return
+    for batch_id in os.listdir(STAGING_ROOT):
+        try:
+            manifest = _load_manifest(batch_id)
+            if manifest.get("result") is None and manifest.get("files"):
+                asyncio.create_task(_process_batch(batch_id, _batch_dir(batch_id), manifest["files"]))
+        except (HTTPException, OSError, ValueError):
+            continue
 
 
 # ── 1) อัป + อ่าน + จับคู่ ──────────────────────────────────────────
@@ -210,7 +222,7 @@ async def batch_extract(files: list[UploadFile] = File(...)):
     ยังไม่บันทึกลงฐานข้อมูล"""
     if not files:
         raise HTTPException(status_code=400, detail="ไม่พบไฟล์")
-    if not gemini_available():
+    if not gemini_available() and os.getenv("ENABLE_LOCAL_OCR_FALLBACK", "false").lower() not in {"1", "true", "yes"}:
         raise HTTPException(
             status_code=503,
             detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน backend — AI จึงไม่สามารถอ่านเอกสารได้",
@@ -230,10 +242,14 @@ async def batch_extract(files: list[UploadFile] = File(...)):
 
     # ── เก็บไฟล์เข้า staging ก่อน (พร้อม hash กันไฟล์ซ้ำ) ──
     staged, seen_hashes = [], {}
+    total_bytes = 0
     for i, f in enumerate(files):
         if not (f.filename or "").lower().endswith(".pdf"):
             continue
-        data = await f.read()
+        data = await f.read(MAX_PDF_BYTES + 1)
+        total_bytes += len(data)
+        if total_bytes > MAX_BATCH_BYTES:
+            raise HTTPException(status_code=413, detail="ขนาดรวมของชุดเกินกำหนด")
         if len(data) > MAX_PDF_BYTES:
             raise HTTPException(status_code=413, detail=f"ไฟล์ {f.filename} ใหญ่เกินกำหนด 12 MB")
         sha = hashlib.sha256(data).hexdigest()
@@ -376,6 +392,26 @@ async def batch_commit(batch_id: str, payload: dict):
     if not items:
         raise HTTPException(status_code=400, detail="ไม่มีรายการให้บันทึก")
 
+    # Validate the entire selection before any storage or database mutation.
+    staged_ids = {record["file_id"] for record in m["files"]}
+    selected_ids = set()
+    for item in items:
+        for key in ("main_file_id", "prb_file_id"):
+            file_id = item.get(key)
+            if key == "prb_file_id" and not file_id:
+                continue
+            if file_id not in staged_ids or file_id in selected_ids:
+                raise HTTPException(status_code=400, detail="ไฟล์ไม่อยู่ในชุดนี้หรือถูกเลือกซ้ำ")
+            selected_ids.add(file_id)
+        main = _clean_for_db(item.get("main") or {})
+        if not all(main.get(key) for key in ("policy_number", "insured_name", "coverage_start", "coverage_end")):
+            raise HTTPException(status_code=422, detail="ตรวจเลขกรมธรรม์ ชื่อ และวันคุ้มครองให้ครบก่อนบันทึก")
+        if main["coverage_start"] >= main["coverage_end"]:
+            raise HTTPException(status_code=422, detail="วันสิ้นสุดต้องอยู่หลังวันเริ่มคุ้มครอง")
+        prb = _clean_for_db(item.get("prb") or {})
+        if prb and doc_pairing.score_pair(main, prb)[0] < 0:
+            raise HTTPException(status_code=422, detail="กธ. และ พ.ร.บ. มีเลขตัวถังหรือปีคุ้มครองขัดกัน")
+
     supabase = get_supabase()
     loop = asyncio.get_event_loop()
     created, failed = [], []
@@ -406,14 +442,13 @@ async def batch_commit(batch_id: str, payload: dict):
                     _executor, lambda: _upload_pdf_to_storage(supabase, blob, fname))
                 main.update({"pdf_url": url, "pdf_filename": fname, "pdf_size": len(blob)})
 
-            res = supabase.table("insurance_policies").insert(main).execute()
-            policy_id = res.data[0]["id"]
+            att = None
 
             # แนบ พ.ร.บ.
             prb = _clean_for_db(it.get("prb") or {})
             pf = it.get("prb_file_id")
             if prb or pf:
-                att = {"policy_id": policy_id, "doc_type": "prb", "label": "พ.ร.บ."}
+                att = {"doc_type": "prb", "label": "พ.ร.บ."}
                 for key in ("net_premium", "stamp_duty", "vat", "total_premium",
                             "coverage_start", "coverage_end"):
                     if prb.get(key) is not None:
@@ -429,7 +464,8 @@ async def batch_commit(batch_id: str, payload: dict):
                         _executor, lambda: _upload_pdf_to_storage(supabase, pblob, pname))
                     att.update({"pdf_url": purl, "pdf_filename": pname,
                                 "pdf_size": len(pblob)})
-                supabase.table("policy_attachments").insert(att).execute()
+            from services.batch_persistence import insert_policy_pair
+            policy_id = await loop.run_in_executor(_executor, insert_policy_pair, main, att)
 
             created.append({"policy_id": policy_id,
                             "license_plate": main.get("license_plate")})

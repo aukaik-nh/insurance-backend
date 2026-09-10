@@ -62,3 +62,6 @@ models/tessdata/
 tmp/ocr-layout-probe/
 tmp/tessdata-best/
 output/ocr_accuracy/
+
+# Private PDF staging, never commit insurance documents
+.batch-staging/
