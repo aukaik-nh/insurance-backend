@@ -60,6 +60,42 @@ BUCKET_NAME = "policy-pdfs"  # Supabase Storage bucket (primary)
 from services.document_naming import make_display_filename as _make_display_filename
 
 
+def _money(value) -> float:
+    try:
+        return float(_clean_thai_number(str(value))) if value not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _apply_financial_totals(save_data: dict, paired_prb_total=0) -> dict:
+    values = [save_data.get(key) for key in ("net_premium", "stamp_duty", "vat", "total_premium")]
+    if all(value is not None for value in values):
+        expected = round(_money(values[0]) + _money(values[1]) + _money(values[2]), 2)
+        if abs(expected - _money(values[3])) > 0.02:
+            raise HTTPException(
+                status_code=422,
+                detail=f"ยอดเบี้ยไม่ตรง: เบี้ยสุทธิ + อากร + VAT ต้องเท่ากับ {expected:.2f} บาท",
+            )
+    net = _money(save_data.get("net_premium"))
+    pct = _money(save_data.get("commission_pct"))
+    if save_data.get("commission_baht") is None:
+        save_data["commission_baht"] = round(net * pct / 100, 2)
+    commission = _money(save_data.get("commission_baht"))
+    if save_data.get("wht_10pct") is None:
+        save_data["wht_10pct"] = round(commission * 0.10, 2)
+    if save_data.get("total_premium") is not None:
+        save_data["collected_amount"] = round(
+            _money(save_data.get("total_premium"))
+            + _money(paired_prb_total)
+            - _money(save_data.get("prepaid_tax_1pct"))
+            - commission
+            + _money(save_data.get("wht_10pct"))
+            + _money(save_data.get("rounding")),
+            2,
+        )
+    return save_data
+
+
 def _safe_storage_name(filename: str) -> str:
     """[DEPRECATED] เก็บไว้ backward compat กับ /upload-pdf-only route"""
     stem = os.path.splitext(filename)[0]
@@ -405,6 +441,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 @router.post("/save-policy")
 async def save_policy(data: dict):
     supabase = get_supabase()
+    paired_prb_total = data.get("paired_prb_total")
 
     save_data = {}
     skipped   = {}
@@ -443,6 +480,7 @@ async def save_policy(data: dict):
                 save_data[k] = str(v).strip() or None
 
     save_data["manually_edited"] = True
+    _apply_financial_totals(save_data, paired_prb_total)
 
     # Auto-rename pdf_filename ตามประเภทกรมธรรม์ (ถ้ามีไฟล์)
     # motor → ทะเบียน, fire → ที่อยู่, PA/TA → ชื่อ
